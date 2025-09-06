@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.10.0
+    container_name: devsecops-logstash
+    environment:
+      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVICE_NAME=devsecops-logstash
+      - ENVIRONMENT=development
+      - DEBUG_OUTPUT=false
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      - ./logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - logstash_data:/usr/share/logstash/data
+    ports:
+      - "5044:5044"  # Beats input
+      - "5000:5000"  # TCP input
+      - "8080:8080"  # HTTP input
+      - "514:514"    # Syslog input
+      - "9600:9600"  # HTTP API
+    networks:
+      - elk-network
+    depends_on:
+      - elasticsearch
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9600 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  logstash_data:
+    driver: local
+
+networks:
+  elk-network:
+    external: true

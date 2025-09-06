@@ -1,0 +1,28 @@
+{
+  "version": "8.10.0",
+  "objects": [
+    {
+      "id": "devsecops-logs-index-pattern",
+      "type": "index-pattern",
+      "attributes": {
+        "title": "devsecops-logs-*",
+        "timeFieldName": "@timestamp"
+      }
+    },
+    {
+      "id": "devsecops-overview-dashboard",
+      "type": "dashboard",
+      "attributes": {
+        "title": "DevSecOps Application Overview",
+        "description": "Main dashboard for DevSecOps 3-tier application monitoring with ELK & Jaeger",
+        "timeRestore": true,
+        "timeTo": "now",
+        "timeFrom": "now-24h",
+        "refreshInterval": {
+          "pause": false,
+          "value": 30000
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "DevSecOps ELK & Jaeger Overview",
+    "description": "Comprehensive monitoring dashboard for DevSecOps 3-tier application with ELK stack and Jaeger tracing",
+    "tags": ["devsecops", "elk", "jaeger", "monitoring"],
+    "style": "dark",
+    "timezone": "",
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [],
+    "version": 1,
+    "uid": "devsecops-elk-jaeger",
+    "editable": true,
+    "graphTooltip": 1,
+    "links": [
+      {
+        "title": "Kibana Logs",
+        "url": "http://localhost:5601",
+        "type": "link",
+        "targetBlank": true
+      },
+      {
+        "title": "Jaeger Tracing", 
+        "url": "http://localhost:16686",
+        "type": "link",
+        "targetBlank": true
+      }
+    ]
+  }
+}

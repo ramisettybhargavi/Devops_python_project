@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevSecOps 3-Tier Application with ELK & Jaeger</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="#">DevSecOps ELK Demo</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="#users">Users</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#metrics">Metrics</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#tracing">Tracing</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- Health Status with Tracing Info -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="mb-0">System Health & Observability Status</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="health-status" class="d-flex align-items-center mb-3">
+                            <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                            <span>Checking system health...</span>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>Logging (ELK Stack)</h6>
+                                <div id="elk-status">
+                                    <small class="text-muted">Elasticsearch: <span id="es-status">Checking...</span></small><br>
+                                    <small class="text-muted">Kibana: <span id="kibana-status">Checking...</span></small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Distributed Tracing</h6>
+                                <div id="jaeger-status">
+                                    <small class="text-muted">Jaeger: <span id="jaeger-status-value">Checking...</span></small><br>
+                                    <small class="text-muted">Last Trace ID: <span id="last-trace-id">N/A</span></small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- User Management Section -->
+        <div class="row">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Add New User</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="user-form">
+                            <div class="mb-3">
+                                <label for="userName" class="form-label">Name</label>
+                                <input type="text" class="form-control" id="userName" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="userEmail" class="form-label">Email</label>
+                                <input type="email" class="form-control" id="userEmail" required>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Add User</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Metrics Card -->
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5 class="mb-0">Application Metrics</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="metrics-data">
+                            <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                            <span>Loading metrics...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Users List</h5>
+                        <button id="refresh-users" class="btn btn-outline-primary btn-sm">
+                            <i class="fas fa-sync"></i> Refresh
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="users-loading" class="text-center">
+                            <div class="spinner-border" role="status"></div>
+                            <p>Loading users...</p>
+                        </div>
+                        <div id="users-table" style="display: none;">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Name</th>
+                                        <th>Email</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="users-tbody">
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="users-error" class="alert alert-danger" style="display: none;">
+                            <strong>Error:</strong> <span id="error-message"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Observability Links -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Observability Dashboard Links</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3">
+                                <a href="http://localhost:5601" target="_blank" class="btn btn-outline-info w-100">
+                                    <i class="fas fa-chart-line"></i> Kibana Logs
+                                </a>
+                            </div>
+                            <div class="col-md-3">
+                                <a href="http://localhost:16686" target="_blank" class="btn btn-outline-warning w-100">
+                                    <i class="fas fa-project-diagram"></i> Jaeger Tracing
+                                </a>
+                            </div>
+                            <div class="col-md-3">
+                                <a href="http://localhost:3000" target="_blank" class="btn btn-outline-success w-100">
+                                    <i class="fas fa-tachometer-alt"></i> Grafana Metrics
+                                </a>
+                            </div>
+                            <div class="col-md-3">
+                                <a href="http://localhost:9090" target="_blank" class="btn btn-outline-danger w-100">
+                                    <i class="fas fa-fire"></i> Prometheus
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="success-toast" class="toast" role="alert">
+            <div class="toast-header bg-success text-white">
+                <strong class="me-auto">Success</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="success-message"></div>
+        </div>
+
+        <div id="error-toast" class="toast" role="alert">
+            <div class="toast-header bg-danger text-white">
+                <strong class="me-auto">Error</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="error-toast-message"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://kit.fontawesome.com/your-fontawesome-kit.js" crossorigin="anonymous"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

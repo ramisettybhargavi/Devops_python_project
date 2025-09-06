@@ -1,0 +1,60 @@
+{
+  "service_strategies": [
+    {
+      "service": "devsecops-backend",
+      "type": "probabilistic",
+      "param": 1.0,
+      "max_traces_per_second": 100,
+      "operation_strategies": [
+        {
+          "operation": "GET /health",
+          "type": "probabilistic",
+          "param": 0.1
+        },
+        {
+          "operation": "GET /metrics",
+          "type": "probabilistic",
+          "param": 0.05
+        },
+        {
+          "operation": "POST /api/users",
+          "type": "probabilistic",
+          "param": 1.0
+        },
+        {
+          "operation": "PUT /api/users/*",
+          "type": "probabilistic",
+          "param": 1.0
+        },
+        {
+          "operation": "DELETE /api/users/*",
+          "type": "probabilistic",
+          "param": 1.0
+        }
+      ]
+    },
+    {
+      "service": "devsecops-frontend",
+      "type": "probabilistic",
+      "param": 0.5,
+      "max_traces_per_second": 50
+    }
+  ],
+  "default_strategy": {
+    "type": "probabilistic",
+    "param": 0.1,
+    "max_traces_per_second": 50
+  },
+  "per_operation_strategies": [
+    {
+      "operation": "health_check",
+      "type": "probabilistic",
+      "param": 0.05
+    },
+    {
+      "operation": "metrics",
+      "type": "probabilistic", 
+      "param": 0.01
+    }
+  ]
+}

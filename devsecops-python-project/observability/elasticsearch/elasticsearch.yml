@@ -1,0 +1,38 @@
+# Elasticsearch Configuration for DevSecOps Application
+cluster.name: "devsecops-elk-cluster"
+network.host: "0.0.0.0"
+http.port: 9200
+transport.port: 9300
+
+# Node configuration
+node.name: "devsecops-es-node"
+node.master: true
+node.data: true
+
+# Discovery configuration for single node
+discovery.type: single-node
+
+# Security configuration (disable for development)
+xpack.security.enabled: false
+xpack.security.enrollment.enabled: false
+
+# Memory settings
+bootstrap.memory_lock: false
+
+# Index settings
+action.auto_create_index: true
+action.destructive_requires_name: false
+
+# Logging configuration
+logger.level: INFO
+logger.org.elasticsearch.discovery: WARN
+
+# Performance settings
+indices.memory.index_buffer_size: 10%
+indices.fielddata.cache.size: 20%
+
+# Index lifecycle management
+xpack.ilm.enabled: true
+
+# Monitoring
+xpack.monitoring.collection.enabled: true
