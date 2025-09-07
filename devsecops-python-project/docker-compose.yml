@@ -1,4 +1,4 @@
-# Updated Docker Compose Configuration for EC2 Public IP Access
+s# Updated Docker Compose Configuration for EC2 Public IP Access
 # DevSecOps 3-Tier Application with ELK Stack & Jaeger Tracing
 # Modified for direct access via EC2 public IP address
 
@@ -103,6 +103,7 @@ services:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
       - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - xpack.monitoring.enabled=true
       - xpack.security.enabled=false
       - xpack.security.enrollment.enabled=false
       - action.auto_create_index=true
