@@ -5,7 +5,6 @@
 version: '3.8'
 
 services:
-  # Database Tier (Tier 3)
   postgres:
     image: postgres:15-alpine
     container_name: devsecops-postgres
@@ -18,7 +17,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./database/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"  # Accessible via EC2 public IP
+      - "5432:5432"
     networks:
       - devsecops-network
       - elk-network
@@ -29,14 +28,70 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '0.5'
-        reservations:
-          memory: 512M
-          cpus: '0.25'
+
+  db-migration:
+    build:
+      context: ./database
+      dockerfile: Dockerfile.migration
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=devsecops_db
+      - DB_USER=devsecops_user
+      - DB_PASSWORD=secure_password_123
+      - DOCKER_MODE=true
+      - POSTGRES_CONTAINER=devsecops-postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./database/scripts:/scripts
+    networks:
+      - devsecops-network
+    command: ["/scripts/enhanced-migrate.sh"]
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: devsecops-backend
+    environment:
+      - DATABASE_URL=postgresql://devsecops_user:secure_password_123@postgres:5432/devsecops_db
+      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=5000
+      - SECRET_KEY=dev-secret-key-change-in-production-$(date +%s)
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - LOGSTASH_HOST=logstash
+      - LOGSTASH_PORT=5044
+      - JAEGER_AGENT_HOST=jaeger
+      - JAEGER_AGENT_PORT=6831
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_EXPORTER_OTLP_INSECURE=true
+      - SERVICE_NAME=devsecops-backend
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+    ports:
+      - "5000:5000"
+    depends_on:
+      - db-migration
+      - postgres
+      - elasticsearch
+      - logstash
+      - jaeger
+    networks:
+      - devsecops-network
+      - elk-network
+      - monitoring-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
 
   # ELK Stack - Elasticsearch (Start First)
   elasticsearch:
@@ -477,22 +532,10 @@ services:
 networks:
   devsecops-network:
     driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.20.0.0/16
   elk-network:
     driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.21.0.0/16
   monitoring-network:
     driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.22.0.0/16
 
 # Volume Configuration
 volumes:
