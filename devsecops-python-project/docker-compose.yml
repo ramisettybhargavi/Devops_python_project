@@ -100,7 +100,7 @@ services:
     ports:
       - "5044:5044"
       - "9600:9600"
-      - "8080:8080"  # HTTP input
+      - "8082:8080"  # HTTP input
     networks:
       - elk-network
       - devsecops-network
