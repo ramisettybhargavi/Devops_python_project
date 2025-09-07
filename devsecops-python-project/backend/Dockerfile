@@ -50,4 +50,4 @@ ENV JAEGER_AGENT_PORT=6831
 ENV JAEGER_ENDPOINT=http://jaeger:14268/api/traces
 
 # Run the application
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "60", "--keepalive", "2", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "main:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "60", "--keep-alive", "2", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "main:app"]
