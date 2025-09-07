@@ -1,9 +1,17 @@
 FROM node:18-alpine AS builder
 
+# Install necessary tools
+RUN apk add --no-cache wget curl
+
 WORKDIR /app
+
+# Copy source files
 COPY src/ ./src/
 
 FROM nginx:1.25-alpine
+
+# Install curl for health checks
+RUN apk add --no-cache curl wget
 
 # Copy custom nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
@@ -11,9 +19,9 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 # Copy built application
 COPY --from=builder /app/src /usr/share/nginx/html
 
-# Add healthcheck
+# Add healthcheck using wget (more reliable than curl in alpine)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:80/ || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:80/ || exit 1
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nginx-user && \
