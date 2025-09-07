@@ -1,3 +1,6 @@
+# Fixed Docker Compose Configuration for EC2 Deployment
+# DevSecOps 3-Tier Application with ELK Stack & Jaeger Tracing
+
 version: '3.8'
 
 services:
@@ -20,21 +23,21 @@ services:
       - elk-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U devsecops_user -d devsecops_db"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1G
           cpus: '0.5'
         reservations:
-          memory: 256M
+          memory: 512M
           cpus: '0.25'
 
-  # ELK Stack - Elasticsearch
+  # ELK Stack - Elasticsearch (Start First)
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.10.0
     container_name: devsecops-elasticsearch
@@ -43,11 +46,14 @@ services:
       - cluster.name=devsecops-elk-cluster
       - discovery.type=single-node
       - bootstrap.memory_lock=true
-      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
       - xpack.security.enabled=false
       - xpack.security.enrollment.enabled=false
       - action.auto_create_index=true
       - cluster.routing.allocation.disk.threshold_enabled=false
+      - http.host=0.0.0.0
+      - transport.host=127.0.0.1
+      - network.publish_host=_local_
     ulimits:
       memlock:
         soft: -1
@@ -57,43 +63,44 @@ services:
         hard: 65536
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
-      - ./observability/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
     ports:
       - "9200:9200"
       - "9300:9300"
     networks:
       - elk-network
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=30s || exit 1"]
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+      timeout: 30s
+      retries: 10
+      start_period: 120s
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
           memory: 2G
           cpus: '1.0'
-        reservations:
-          memory: 1G
-          cpus: '0.5'
 
-  # ELK Stack - Logstash
+  # ELK Stack - Logstash (Wait for Elasticsearch)
   logstash:
     image: docker.elastic.co/logstash/logstash:8.10.0
     container_name: devsecops-logstash
     environment:
-      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "LS_JAVA_OPTS=-Xms1g -Xmx1g"
       - PIPELINE_WORKERS=2
       - PIPELINE_BATCH_SIZE=125
       - PIPELINE_BATCH_DELAY=50
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     volumes:
       - ./observability/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
-      - ./observability/logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - logstash_data:/usr/share/logstash/data
     ports:
       - "5044:5044"
       - "9600:9600"
+      - "8080:8080"  # HTTP input
     networks:
       - elk-network
       - devsecops-network
@@ -104,21 +111,21 @@ services:
       test: ["CMD-SHELL", "curl -f http://localhost:9600/_node/stats || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 10
+      start_period: 120s
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
           memory: 1G
           cpus: '0.5'
-        reservations:
-          memory: 512M
-          cpus: '0.25'
 
-  # ELK Stack - Kibana
+  # ELK Stack - Kibana (Wait for Elasticsearch)
   kibana:
-    image: docker.elastic.co/kibana/kibana:8.10.0
+    image: docker.elastic.co/kibana/kibana:8.10.1
     container_name: devsecops-kibana
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
@@ -126,9 +133,10 @@ services:
       - SERVER_HOST=0.0.0.0
       - XPACK_SECURITY_ENABLED=false
       - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=a7a6311933d3503b89bc2dbc36572c33a6c10925682e591bffcab6911c06786d
+      - SERVER_BASEPATH=""
+      - SERVER_REWRITEBASEPATH=false
     volumes:
       - kibana_data:/usr/share/kibana/data
-      - ./observability/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
     ports:
       - "5601:5601"
     networks:
@@ -140,8 +148,52 @@ services:
       test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+  # Jaeger All-in-One for Distributed Tracing (Wait for Elasticsearch)
+  jaeger:
+    image: jaegertracing/all-in-one:1.49
+    container_name: devsecops-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=elasticsearch
+      - ES_SERVER_URLS=http://elasticsearch:9200
+      - ES_CREATE_INDEX_TEMPLATES=true
+      - ES_VERSION=8
+      - QUERY_BASE_PATH=/
+      - QUERY_LOG_LEVEL=info
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    ports:
+      - "6831:6831/udp"  # Jaeger agent
+      - "6832:6832/udp"  # Jaeger agent
+      - "5778:5778"      # Agent config
+      - "14268:14268"    # Collector HTTP
+      - "14250:14250"    # Collector gRPC
+      - "9411:9411"      # Zipkin
+      - "16686:16686"    # UI
+      - "14269:14269"    # Admin port
+    networks:
+      - elk-network
+      - monitoring-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:14269/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
     restart: unless-stopped
     deploy:
       resources:
@@ -152,47 +204,53 @@ services:
           memory: 512M
           cpus: '0.25'
 
-  # Jaeger All-in-One for Distributed Tracing
-  jaeger:
-    image: jaegertracing/all-in-one:1.49
-    container_name: devsecops-jaeger
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-      - SPAN_STORAGE_TYPE=elasticsearch
-      - ES_SERVER_URLS=http://elasticsearch:9200
-      - ES_CREATE_INDEX_TEMPLATES=true
-      - QUERY_BASE_PATH=/
-      - QUERY_LOG_LEVEL=info
+  # Node Exporter for system metrics
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: devsecops-node-exporter
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
     ports:
-      - "6831:6831/udp"
-      - "6832:6832/udp"
-      - "5778:5778"
-      - "14268:14268"
-      - "14250:14250"
-      - "9411:9411"
-      - "16686:16686"
-      - "14269:14269"
+      - "9100:9100"
     networks:
-      - elk-network
       - monitoring-network
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:14269 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.2'
+
+  # cAdvisor for container metrics
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: devsecops-cadvisor
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /cgroup:/cgroup:ro
+    ports:
+      - "8081:8080"  # Changed to avoid conflict
+    networks:
+      - monitoring-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
           memory: 512M
-          cpus: '0.5'
-        reservations:
-          memory: 256M
-          cpus: '0.25'
+          cpus: '0.3'
 
   # Backend Tier (Tier 2) - Enhanced with ELK & Jaeger
   backend:
@@ -233,17 +291,32 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 90s
+      retries: 5
+      start_period: 120s
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
           cpus: '1.0'
         reservations:
-          memory: 512M
+          memory: 1G
           cpus: '0.5'
+
+  # Nginx reverse proxy for frontend
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:latest
+    container_name: devsecops-nginx-exporter
+    command:
+      - '-nginx.scrape-uri=http://frontend:80/nginx_status'
+    ports:
+      - "9113:9113"
+    networks:
+      - monitoring-network
+      - devsecops-network
+    depends_on:
+      - frontend
+    restart: unless-stopped
 
   # Frontend Tier (Tier 1)
   frontend:
@@ -261,23 +334,24 @@ services:
         condition: service_healthy
     networks:
       - devsecops-network
+      - monitoring-network
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
       interval: 30s
       timeout: 5s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 60s
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
           cpus: '0.5'
         reservations:
-          memory: 128M
+          memory: 256M
           cpus: '0.25'
 
-  # Prometheus for Metrics Collection
+  # Prometheus for Metrics Collection (Fixed Configuration)
   prometheus:
     image: prom/prometheus:v2.47.0
     container_name: devsecops-prometheus
@@ -288,8 +362,9 @@ services:
       - '--web.console.templates=/etc/prometheus/consoles'
       - '--web.enable-lifecycle'
       - '--web.enable-admin-api'
+      - '--storage.tsdb.retention.time=30d'
     volumes:
-      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/prometheus-fixed.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
@@ -297,14 +372,23 @@ services:
       - monitoring-network
       - elk-network
       - devsecops-network
+    depends_on:
+      - node-exporter
+      - cadvisor
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1G
           cpus: '0.5'
         reservations:
-          memory: 256M
+          memory: 512M
           cpus: '0.25'
 
   # Grafana for Visualization
@@ -316,6 +400,7 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
       - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_SERVER_ROOT_URL=http://localhost:3000
     volumes:
       - grafana_data:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -329,14 +414,19 @@ services:
       - prometheus
       - elasticsearch
       - jaeger
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1G
           cpus: '0.5'
         reservations:
-          memory: 256M
+          memory: 512M
           cpus: '0.25'
 
   # Database Administration
@@ -362,10 +452,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
           cpus: '0.25'
         reservations:
-          memory: 128M
+          memory: 256M
           cpus: '0.1'
 
 # Network Configuration
@@ -394,6 +484,8 @@ volumes:
   postgres_data:
     driver: local
   elasticsearch_data:
+    driver: local
+  logstash_data:
     driver: local
   kibana_data:
     driver: local
