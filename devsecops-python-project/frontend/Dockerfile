@@ -8,10 +8,14 @@ WORKDIR /app
 # Copy source files
 COPY src/ ./src/
 
+# Production stage with nginx
 FROM nginx:1.25-alpine
 
-# Install curl for health checks
+# Install curl and wget for health checks
 RUN apk add --no-cache curl wget
+
+# Remove default nginx configuration
+RUN rm /etc/nginx/conf.d/default.conf
 
 # Copy custom nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
@@ -19,21 +23,20 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 # Copy built application
 COPY --from=builder /app/src /usr/share/nginx/html
 
-# Add healthcheck using wget (more reliable than curl in alpine)
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:80/ || exit 1
+# Fix permissions (nginx runs as nginx user by default)
+RUN chown -R nginx:nginx /usr/share/nginx/html
+RUN chown -R nginx:nginx /var/cache/nginx
+RUN chown -R nginx:nginx /var/log/nginx
 
-# Create non-root user for security
-RUN addgroup -g 1001 -S nginx-user && \
-    adduser -S -D -H -u 1001 -h /var/cache/nginx -s /sbin/nologin -G nginx-user -g nginx-user nginx-user && \
-    chown -R nginx-user:nginx-user /var/cache/nginx && \
-    chown -R nginx-user:nginx-user /var/log/nginx && \
-    chown -R nginx-user:nginx-user /etc/nginx/conf.d && \
-    touch /var/run/nginx.pid && \
-    chown -R nginx-user:nginx-user /var/run/nginx.pid
+# Create nginx pid file directory
+RUN mkdir -p /var/run/nginx
+RUN chown -R nginx:nginx /var/run/nginx
 
-USER nginx-user
+# Add healthcheck (run as root, check service)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD curl -f http://localhost/health || exit 1
 
 EXPOSE 80
 
+# Run nginx as nginx user (default)
 CMD ["nginx", "-g", "daemon off;"]
