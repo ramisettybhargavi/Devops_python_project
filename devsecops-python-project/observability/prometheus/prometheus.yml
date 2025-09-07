@@ -1,0 +1,106 @@
+# Fixed Prometheus Configuration for EC2 Deployment
+# Prometheus Configuration with proper service discovery and port mappings
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'devsecops-cluster'
+    environment: 'development'
+
+rule_files:
+  - "rules/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+
+  # Backend application metrics
+  - job_name: 'devsecops-backend'
+    static_configs:
+      - targets: ['backend:5000']
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+    honor_labels: true
+
+  # Node exporter for system metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+
+  # cAdvisor for container metrics
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+
+  # Nginx exporter for frontend metrics
+  - job_name: 'nginx-exporter'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+
+  # PostgreSQL metrics (if postgres_exporter is available)
+  - job_name: 'postgres-exporter'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+
+  # Elasticsearch metrics
+  - job_name: 'elasticsearch'
+    static_configs:
+      - targets: ['elasticsearch:9200']
+    scrape_interval: 30s
+    metrics_path: '/_prometheus/metrics'
+    scrape_timeout: 10s
+
+  # Jaeger metrics
+  - job_name: 'jaeger'
+    static_configs:
+      - targets: ['jaeger:14269']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+
+  # Logstash metrics
+  - job_name: 'logstash'
+    static_configs:
+      - targets: ['logstash:9600']
+    scrape_interval: 30s
+    metrics_path: '/_node/stats'
+    scrape_timeout: 10s
+
+  # Kibana metrics
+  - job_name: 'kibana'
+    static_configs:
+      - targets: ['kibana:5601']
+    scrape_interval: 30s
+    metrics_path: '/api/stats'
+    scrape_timeout: 10s
+
+  # Grafana metrics
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+
+  # Docker daemon metrics (if available)
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['host.docker.internal:9323']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
