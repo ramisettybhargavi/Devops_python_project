@@ -41,12 +41,18 @@ ENV FLASK_ENV=production
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# ELK and Jaeger configuration
+# ELK and Jaeger configuration - REMOVE deprecated Jaeger Agent settings and add OTLP config
 ENV ELASTICSEARCH_URL=http://elasticsearch:9200
 ENV LOGSTASH_HOST=logstash
 ENV LOGSTASH_PORT=5044
-ENV JAEGER_AGENT_HOST=jaeger
-ENV JAEGER_AGENT_PORT=6831
+
+# Remove these deprecated Jaeger agent environment variables
+# ENV JAEGER_AGENT_HOST=jaeger
+# ENV JAEGER_AGENT_PORT=6831
+
+# Keep OTLP and HTTP endpoint for Jaeger
+ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+ENV OTEL_EXPORTER_OTLP_INSECURE=true
 ENV JAEGER_ENDPOINT=http://jaeger:14268/api/traces
 
 # Run the application
