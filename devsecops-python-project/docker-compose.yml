@@ -1,5 +1,6 @@
-# Fixed Docker Compose Configuration for EC2 Deployment
+# Updated Docker Compose Configuration for EC2 Public IP Access
 # DevSecOps 3-Tier Application with ELK Stack & Jaeger Tracing
+# Modified for direct access via EC2 public IP address
 
 version: '3.8'
 
@@ -17,7 +18,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./database/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "5432:5432"  # Accessible via EC2 public IP
     networks:
       - devsecops-network
       - elk-network
@@ -51,10 +52,9 @@ services:
       - xpack.security.enrollment.enabled=false
       - action.auto_create_index=true
       - cluster.routing.allocation.disk.threshold_enabled=false
-      - http.host=0.0.0.0
-      - transport.host=0.0.0.0 #127.0.0.1
+      - http.host=0.0.0.0  # Allow external connections
+      - transport.host=0.0.0.0
       - network.host=0.0.0.0
-      #- network.publish_host=_local_
     ulimits:
       memlock:
         soft: -1
@@ -65,8 +65,8 @@ services:
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
     ports:
-      - "9200:9200"
-      - "9300:9300"
+      - "9200:9200"  # Accessible via EC2 public IP
+      - "9300:9300"  # Accessible via EC2 public IP
     networks:
       - elk-network
     healthcheck:
@@ -99,9 +99,9 @@ services:
       - ./observability/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
       - logstash_data:/usr/share/logstash/data
     ports:
-      - "5044:5044"
-      - "9600:9600"
-      - "8082:8080"  # HTTP input
+      - "5044:5044"  # Accessible via EC2 public IP
+      - "9600:9600"  # Accessible via EC2 public IP
+      - "8082:8080"  # HTTP input - Accessible via EC2 public IP
     networks:
       - elk-network
       - devsecops-network
@@ -131,7 +131,7 @@ services:
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
       - SERVER_NAME=devsecops-kibana
-      - SERVER_HOST=0.0.0.0
+      - SERVER_HOST=0.0.0.0  # Allow external connections
       - XPACK_SECURITY_ENABLED=false
       - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=a7a6311933d3503b89bc2dbc36572c33a6c10925682e591bffcab6911c06786d
       - SERVER_BASEPATH=""
@@ -139,7 +139,7 @@ services:
     volumes:
       - kibana_data:/usr/share/kibana/data
     ports:
-      - "5601:5601"
+      - "5601:5601"  # Accessible via EC2 public IP
     networks:
       - elk-network
     depends_on:
@@ -161,7 +161,7 @@ services:
           memory: 1G
           cpus: '0.5'
 
-  # Jaeger All-in-One for Distributed Tracing (Wait for Elasticsearch)
+  # Jaeger All-in-One for Distributed Tracing (Fixed Configuration)
   jaeger:
     image: jaegertracing/all-in-one:1.49
     container_name: devsecops-jaeger
@@ -174,16 +174,20 @@ services:
       - QUERY_BASE_PATH=/
       - QUERY_LOG_LEVEL=info
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+      # OTLP configuration for gRPC and HTTP
+      - COLLECTOR_OTLP_GRPC_HOST_PORT=0.0.0.0:4317
+      - COLLECTOR_OTLP_HTTP_HOST_PORT=0.0.0.0:4318
     ports:
-      - "6831:6831/udp"  # Jaeger agent
-      - "6832:6832/udp"  # Jaeger agent
-      - "5778:5778"      # Agent config
-      - "14268:14268"    # Collector HTTP
-      - "14250:14250"    # Collector gRPC
-      - "9411:9411"      # Zipkin
-      - "16686:16686"    # UI
-      - "14269:14269"
-      - "4317:4317"    # Admin port
+      - "6831:6831/udp"    # Agent UDP - Accessible via EC2 public IP
+      - "6832:6832/udp"    # Agent UDP - Accessible via EC2 public IP
+      - "5778:5778"        # Agent config - Accessible via EC2 public IP
+      - "14268:14268"      # Collector HTTP - Accessible via EC2 public IP
+      - "14250:14250"      # Collector gRPC - Accessible via EC2 public IP
+      - "9411:9411"        # Zipkin - Accessible via EC2 public IP
+      - "16686:16686"      # UI - Accessible via EC2 public IP
+      - "14269:14269"      # Admin port - Accessible via EC2 public IP
+      - "4317:4317"        # OTLP gRPC endpoint - Accessible via EC2 public IP
+      - "4318:4318"        # OTLP HTTP endpoint - Accessible via EC2 public IP
     networks:
       - elk-network
       - monitoring-network
@@ -215,12 +219,13 @@ services:
       - '--path.rootfs=/rootfs'
       - '--path.sysfs=/host/sys'
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--web.listen-address=0.0.0.0:9100'  # Allow external connections
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/rootfs:ro
     ports:
-      - "9100:9100"
+      - "9100:9100"  # Accessible via EC2 public IP
     networks:
       - monitoring-network
     restart: unless-stopped
@@ -244,7 +249,7 @@ services:
       - /var/lib/docker:/var/lib/docker:ro
       - /cgroup:/cgroup:ro
     ports:
-      - "8081:8080"  # Changed to avoid conflict
+      - "8081:8080"  # Accessible via EC2 public IP (mapped to avoid conflict)
     networks:
       - monitoring-network
     restart: unless-stopped
@@ -263,6 +268,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://devsecops_user:secure_password_123@postgres:5432/devsecops_db
       - DEBUG=false
+      - HOST=0.0.0.0  # Allow external connections
       - PORT=5000
       - SECRET_KEY=dev-secret-key-change-in-production-$(date +%s)
       - ELASTICSEARCH_URL=http://elasticsearch:9200
@@ -271,11 +277,14 @@ services:
       - JAEGER_AGENT_HOST=jaeger
       - JAEGER_AGENT_PORT=6831
       - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      # OTLP configuration
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_EXPORTER_OTLP_INSECURE=true
       - SERVICE_NAME=devsecops-backend
       - ENVIRONMENT=development
       - LOG_LEVEL=INFO
     ports:
-      - "5000:5000"
+      - "5000:5000"  # Accessible via EC2 public IP
     depends_on:
       postgres:
         condition: service_healthy
@@ -311,8 +320,9 @@ services:
     container_name: devsecops-nginx-exporter
     command:
       - '-nginx.scrape-uri=http://frontend:80/nginx_status'
+      - '-web.listen-address=0.0.0.0:9113'  # Allow external connections
     ports:
-      - "9113:9113"
+      - "9113:9113"  # Accessible via EC2 public IP
     networks:
       - monitoring-network
       - devsecops-network
@@ -330,7 +340,7 @@ services:
       - BACKEND_URL=http://backend:5000
       - NGINX_PORT=80
     ports:
-      - "8080:80"
+      - "8080:80"  # Accessible via EC2 public IP
     depends_on:
       backend:
         condition: service_healthy
@@ -353,7 +363,7 @@ services:
           memory: 256M
           cpus: '0.25'
 
-  # Prometheus for Metrics Collection (Fixed Configuration)
+  # Prometheus for Metrics Collection
   prometheus:
     image: prom/prometheus:v2.47.0
     container_name: devsecops-prometheus
@@ -365,11 +375,12 @@ services:
       - '--web.enable-lifecycle'
       - '--web.enable-admin-api'
       - '--storage.tsdb.retention.time=30d'
+      - '--web.listen-address=0.0.0.0:9090'  # Allow external connections
     volumes:
-      - ./observability/prometheus/prometheus-fixed.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
-      - "9090:9090"
+      - "9090:9090"  # Accessible via EC2 public IP
     networks:
       - monitoring-network
       - elk-network
@@ -403,12 +414,14 @@ services:
       - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
       - GF_SECURITY_ALLOW_EMBEDDING=true
       - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_SERVER_HTTP_ADDR=0.0.0.0  # Allow external connections
+      - GF_SERVER_HTTP_PORT=3000
     volumes:
       - grafana_data:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3000:3000"
+      - "3000:3000"  # Accessible via EC2 public IP
     networks:
       - monitoring-network
       - elk-network
@@ -442,7 +455,7 @@ services:
       PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: 'True'
       PGADMIN_CONFIG_LOGIN_BANNER: "DevSecOps PostgreSQL Administration"
     ports:
-      - "5050:80"
+      - "5050:80"  # Accessible via EC2 public IP
     depends_on:
       postgres:
         condition: service_healthy
@@ -497,3 +510,4 @@ volumes:
     driver: local
   pgadmin_data:
     driver: local
+
