@@ -15,7 +15,7 @@ import os
 import time
 import uuid
 from datetime import datetime
-from werkzeug.security import generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 import requests
 from pythonjsonlogger import jsonlogger
 from opentelemetry import trace
@@ -26,6 +26,8 @@ from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.resources import Resource
+import socket
+import re
 
 # Configure structured logging for ELK
 def setup_logging():
@@ -123,6 +125,7 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True)
@@ -137,8 +140,14 @@ class User(db.Model):
             'is_active': self.is_active
         }
 
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
     def __repr__(self):
-        return f'<User {self.name}>'
+        return f'<User {self.email}>'
 
 class AuditLog(db.Model):
     __tablename__ = 'audit_logs'
@@ -232,7 +241,6 @@ def after_request(response):
     )
 
     ELK_LOGS.labels(level=log_level).inc()
-
     return response
 
 # Utility functions
@@ -273,57 +281,44 @@ def log_audit(action, resource, details=None, user_id=None):
 
 def validate_email(email):
     """Basic email validation"""
-    import re
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
+def check_service_health(url, timeout=5):
+    """Generic service health check"""
+    try:
+        response = requests.get(url, timeout=timeout)
+        return {
+            "status": "healthy" if response.status_code == 200 else "unhealthy",
+            "healthy": response.status_code == 200,
+            "response_time": response.elapsed.total_seconds()
+        }
+    except Exception as e:
+        return {"status": "error", "healthy": False, "error": str(e)}
+
 def check_elasticsearch_health():
     """Check Elasticsearch cluster health"""
-    try:
-        response = requests.get(
-            f"{app.config['ELASTICSEARCH_URL']}/_cluster/health",
-            timeout=5
-        )
-        if response.status_code == 200:
-            data = response.json()
-            return {"status": data.get('status', 'unknown'), "healthy": True}
-        else:
-            return {"status": "unavailable", "healthy": False}
-    except Exception as e:
-        logger.error("Elasticsearch health check failed", extra={
-            "error": str(e),
-            "elasticsearch_url": app.config['ELASTICSEARCH_URL']
-        })
-        return {"status": "error", "healthy": False, "error": str(e)}
+    return check_service_health(f"{app.config['ELASTICSEARCH_URL']}/_cluster/health")
 
 def check_kibana_health():
     """Check Kibana health"""
-    try:
-        kibana_url = os.environ.get('KIBANA_URL', 'http://localhost:5601')
-        response = requests.get(f"{kibana_url}/api/status", timeout=5)
-        if response.status_code == 200:
-            return {"status": "healthy", "healthy": True}
-        else:
-            return {"status": "unavailable", "healthy": False}
-    except Exception as e:
-        return {"status": "error", "healthy": False, "error": str(e)}
+    kibana_url = os.environ.get('KIBANA_URL', 'http://localhost:5601')
+    return check_service_health(f"{kibana_url}/api/status")
 
 def check_jaeger_health():
     """Check Jaeger health"""
-    try:
-        jaeger_url = os.environ.get('JAEGER_QUERY_URL', 'http://localhost:16686')
-        response = requests.get(f"{jaeger_url}/api/services", timeout=5)
-        if response.status_code == 200:
-            return {"status": "healthy", "healthy": True}
-        else:
-            return {"status": "unavailable", "healthy": False}
-    except Exception as e:
-        return {"status": "error", "healthy": False, "error": str(e)}
+    jaeger_url = os.environ.get('JAEGER_QUERY_URL', 'http://localhost:16686')
+    return check_service_health(f"{jaeger_url}/api/services")
+
+def check_logstash_health():
+    """Check Logstash health"""
+    logstash_url = f"http://{app.config['LOGSTASH_HOST']}:9600"
+    return check_service_health(f"{logstash_url}/_node/stats")
 
 # API Routes
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint with database connectivity and observability stack"""
+    """Comprehensive health check endpoint"""
     with tracer.start_as_current_span("health_check") as span:
         try:
             # Test database connection
@@ -340,20 +335,17 @@ def health_check():
             span.set_status(trace.Status(trace.StatusCode.ERROR))
 
         # Check observability stack
-        elk_status = check_elasticsearch_health()
-        kibana_status = check_kibana_health()
-        jaeger_status = check_jaeger_health()
-
         health_data = {
             "status": "healthy" if db_status == "healthy" else "unhealthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "service": "devsecops-backend-elk",
+            "service": "devsecops-backend",
             "version": "1.0.0",
             "database": db_status,
             "observability": {
-                "elasticsearch": elk_status,
-                "kibana": kibana_status,
-                "jaeger": jaeger_status
+                "elasticsearch": check_elasticsearch_health(),
+                "kibana": check_kibana_health(),
+                "jaeger": check_jaeger_health(),
+                "logstash": check_logstash_health()
             },
             "uptime": time.time() - app.start_time if hasattr(app, 'start_time') else 0,
             "trace_id": getattr(g, 'trace_id', 'unknown')
@@ -363,25 +355,16 @@ def health_check():
         return jsonify(health_data), status_code
 
 # Observability endpoints
-@app.route('/observability/elasticsearch/status', methods=['GET'])
-def elasticsearch_status():
-    """Elasticsearch status endpoint"""
-    with tracer.start_as_current_span("elasticsearch_status"):
-        status = check_elasticsearch_health()
-        return jsonify(status)
-
-@app.route('/observability/kibana/status', methods=['GET'])
-def kibana_status():
-    """Kibana status endpoint"""
-    with tracer.start_as_current_span("kibana_status"):
-        status = check_kibana_status()
-        return jsonify(status)
-
-@app.route('/observability/jaeger/status', methods=['GET'])
-def jaeger_status():
-    """Jaeger status endpoint"""
-    with tracer.start_as_current_span("jaeger_status"):
-        status = check_jaeger_health()
+@app.route('/observability/status', methods=['GET'])
+def observability_status():
+    """Complete observability status"""
+    with tracer.start_as_current_span("observability_status"):
+        status = {
+            "elasticsearch": check_elasticsearch_health(),
+            "kibana": check_kibana_health(),
+            "jaeger": check_jaeger_health(),
+            "logstash": check_logstash_health()
+        }
         return jsonify(status)
 
 @app.route('/metrics', methods=['GET'])
@@ -389,14 +372,14 @@ def metrics():
     """Prometheus metrics endpoint"""
     return generate_latest()
 
-# Continue with the user API endpoints (same logic but with enhanced tracing and logging)
+# User Management API
 @app.route('/api/users', methods=['GET'])
 def get_users():
     """Get all active users with pagination"""
     with tracer.start_as_current_span("get_users") as span:
         try:
             page = request.args.get('page', 1, type=int)
-            per_page = request.args.get('per_page', 100, type=int)
+            per_page = min(request.args.get('per_page', 10, type=int), 100)
 
             span.set_attributes({
                 "pagination.page": page,
@@ -413,12 +396,7 @@ def get_users():
             DB_OPERATIONS.labels(operation='SELECT', table='users').inc()
             span.set_attribute("users.count", len(users_data))
 
-            logger.info("Users retrieved successfully", extra={
-                "trace_id": getattr(g, 'trace_id', 'unknown'),
-                "users_count": len(users_data),
-                "page": page,
-                "per_page": per_page
-            })
+            log_audit("READ", "users", f"Retrieved {len(users_data)} users")
 
             return jsonify({
                 "users": users_data,
@@ -426,7 +404,9 @@ def get_users():
                     "page": page,
                     "per_page": per_page,
                     "total": users_paginated.total,
-                    "pages": users_paginated.pages
+                    "pages": users_paginated.pages,
+                    "has_next": users_paginated.has_next,
+                    "has_prev": users_paginated.has_prev
                 }
             }), 200
 
@@ -438,8 +418,195 @@ def get_users():
             span.set_status(trace.Status(trace.StatusCode.ERROR))
             return jsonify({"error": "Internal server error"}), 500
 
-# Additional user endpoints would follow the same pattern...
-# (I'll include a few key ones for brevity)
+@app.route('/api/users', methods=['POST'])
+def create_user():
+    """Create a new user"""
+    with tracer.start_as_current_span("create_user") as span:
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "No data provided"}), 400
+
+            # Validate required fields
+            required_fields = ['name', 'email']
+            missing_fields = [field for field in required_fields if not data.get(field)]
+            if missing_fields:
+                return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+
+            # Validate email format
+            if not validate_email(data['email']):
+                return jsonify({"error": "Invalid email format"}), 400
+
+            # Check if user already exists
+            existing_user = User.query.filter_by(email=data['email']).first()
+            if existing_user:
+                return jsonify({"error": "User with this email already exists"}), 409
+
+            # Create new user
+            user = User(
+                name=data['name'].strip(),
+                email=data['email'].strip().lower()
+            )
+
+            if data.get('password'):
+                user.set_password(data['password'])
+
+            db.session.add(user)
+            db.session.commit()
+
+            DB_OPERATIONS.labels(operation='INSERT', table='users').inc()
+            span.set_attribute("user.id", user.id)
+            span.set_attribute("user.email", user.email)
+
+            log_audit("CREATE", "user", f"Created user {user.email}", user.id)
+
+            logger.info("User created successfully", extra={
+                "trace_id": getattr(g, 'trace_id', 'unknown'),
+                "user_id": user.id,
+                "email": user.email
+            })
+
+            return jsonify({
+                "message": "User created successfully",
+                "user": user.to_dict()
+            }), 201
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error("Error creating user", extra={
+                "trace_id": getattr(g, 'trace_id', 'unknown'),
+                "error": str(e)
+            })
+            span.set_status(trace.Status(trace.StatusCode.ERROR))
+            return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/users/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    """Get a specific user by ID"""
+    with tracer.start_as_current_span("get_user") as span:
+        try:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+            if not user:
+                return jsonify({"error": "User not found"}), 404
+
+            span.set_attribute("user.id", user.id)
+            span.set_attribute("user.email", user.email)
+
+            DB_OPERATIONS.labels(operation='SELECT', table='users').inc()
+            log_audit("READ", "user", f"Retrieved user {user.email}", user.id)
+
+            return jsonify({"user": user.to_dict()}), 200
+
+        except Exception as e:
+            logger.error("Error fetching user", extra={
+                "trace_id": getattr(g, 'trace_id', 'unknown'),
+                "user_id": user_id,
+                "error": str(e)
+            })
+            span.set_status(trace.Status(trace.StatusCode.ERROR))
+            return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+def update_user(user_id):
+    """Update a user"""
+    with tracer.start_as_current_span("update_user") as span:
+        try:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+            if not user:
+                return jsonify({"error": "User not found"}), 404
+
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "No data provided"}), 400
+
+            # Update fields
+            if 'name' in data:
+                user.name = data['name'].strip()
+            
+            if 'email' in data:
+                email = data['email'].strip().lower()
+                if not validate_email(email):
+                    return jsonify({"error": "Invalid email format"}), 400
+                
+                # Check if email is already taken by another user
+                existing_user = User.query.filter(User.email == email, User.id != user_id).first()
+                if existing_user:
+                    return jsonify({"error": "Email already taken"}), 409
+                
+                user.email = email
+
+            if 'password' in data:
+                user.set_password(data['password'])
+
+            user.updated_at = datetime.utcnow()
+            db.session.commit()
+
+            DB_OPERATIONS.labels(operation='UPDATE', table='users').inc()
+            span.set_attribute("user.id", user.id)
+            span.set_attribute("user.email", user.email)
+
+            log_audit("UPDATE", "user", f"Updated user {user.email}", user.id)
+
+            return jsonify({
+                "message": "User updated successfully",
+                "user": user.to_dict()
+            }), 200
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error("Error updating user", extra={
+                "trace_id": getattr(g, 'trace_id', 'unknown'),
+                "user_id": user_id,
+                "error": str(e)
+            })
+            span.set_status(trace.Status(trace.StatusCode.ERROR))
+            return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    """Soft delete a user"""
+    with tracer.start_as_current_span("delete_user") as span:
+        try:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+            if not user:
+                return jsonify({"error": "User not found"}), 404
+
+            # Soft delete
+            user.is_active = False
+            user.updated_at = datetime.utcnow()
+            db.session.commit()
+
+            DB_OPERATIONS.labels(operation='UPDATE', table='users').inc()
+            span.set_attribute("user.id", user.id)
+            span.set_attribute("user.email", user.email)
+
+            log_audit("DELETE", "user", f"Deleted user {user.email}", user.id)
+
+            return jsonify({"message": "User deleted successfully"}), 200
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error("Error deleting user", extra={
+                "trace_id": getattr(g, 'trace_id', 'unknown'),
+                "user_id": user_id,
+                "error": str(e)
+            })
+            span.set_status(trace.Status(trace.StatusCode.ERROR))
+            return jsonify({"error": "Internal server error"}), 500
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Resource not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    db.session.rollback()
+    logger.error("Internal server error", extra={
+        "trace_id": getattr(g, 'trace_id', 'unknown'),
+        "error": str(error)
+    })
+    return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == '__main__':
     # Initialize database
