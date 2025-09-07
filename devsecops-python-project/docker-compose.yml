@@ -4,14 +4,15 @@ services:
   # Database Tier (Tier 3)
   postgres:
     image: postgres:15-alpine
-    container_name: devsecops-postgres-elk
+    container_name: devsecops-postgres
     environment:
       POSTGRES_DB: devsecops_db
       POSTGRES_USER: devsecops_user
       POSTGRES_PASSWORD: secure_password_123
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./database/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "5432:5432"
     networks:
@@ -24,6 +25,14 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
   # ELK Stack - Elasticsearch
   elasticsearch:
@@ -37,14 +46,18 @@ services:
       - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
       - xpack.security.enabled=false
       - xpack.security.enrollment.enabled=false
+      - action.auto_create_index=true
+      - cluster.routing.allocation.disk.threshold_enabled=false
     ulimits:
       memlock:
         soft: -1
         hard: -1
-    sysctls:
-      - vm.max_map_count=262144
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
+      - ./observability/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
     ports:
       - "9200:9200"
       - "9300:9300"
@@ -57,6 +70,51 @@ services:
       retries: 5
       start_period: 60s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+  # ELK Stack - Logstash
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.10.0
+    container_name: devsecops-logstash
+    environment:
+      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+      - PIPELINE_WORKERS=2
+      - PIPELINE_BATCH_SIZE=125
+      - PIPELINE_BATCH_DELAY=50
+    volumes:
+      - ./observability/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      - ./observability/logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+    ports:
+      - "5044:5044"
+      - "9600:9600"
+    networks:
+      - elk-network
+      - devsecops-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9600/_node/stats || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
 
   # ELK Stack - Kibana
   kibana:
@@ -67,8 +125,10 @@ services:
       - SERVER_NAME=devsecops-kibana
       - SERVER_HOST=0.0.0.0
       - XPACK_SECURITY_ENABLED=false
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=a7a6311933d3503b89bc2dbc36572c33a6c10925682e591bffcab6911c06786d
     volumes:
       - kibana_data:/usr/share/kibana/data
+      - ./observability/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
     ports:
       - "5601:5601"
     networks:
@@ -83,6 +143,14 @@ services:
       retries: 5
       start_period: 60s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
 
   # Jaeger All-in-One for Distributed Tracing
   jaeger:
@@ -90,7 +158,9 @@ services:
     container_name: devsecops-jaeger
     environment:
       - COLLECTOR_OTLP_ENABLED=true
-      - SPAN_STORAGE_TYPE=memory
+      - SPAN_STORAGE_TYPE=elasticsearch
+      - ES_SERVER_URLS=http://elasticsearch:9200
+      - ES_CREATE_INDEX_TEMPLATES=true
       - QUERY_BASE_PATH=/
       - QUERY_LOG_LEVEL=info
     ports:
@@ -105,6 +175,9 @@ services:
     networks:
       - elk-network
       - monitoring-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:14269 || exit 1"]
       interval: 30s
@@ -112,21 +185,32 @@ services:
       retries: 3
       start_period: 60s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
   # Backend Tier (Tier 2) - Enhanced with ELK & Jaeger
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: devsecops-backend-elk
+    container_name: devsecops-backend
     environment:
       - DATABASE_URL=postgresql://devsecops_user:secure_password_123@postgres:5432/devsecops_db
       - DEBUG=false
       - PORT=5000
-      - SECRET_KEY=dev-secret-key-change-in-production
+      - SECRET_KEY=dev-secret-key-change-in-production-$(date +%s)
       - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - LOGSTASH_HOST=logstash
+      - LOGSTASH_PORT=5044
       - JAEGER_AGENT_HOST=jaeger
       - JAEGER_AGENT_PORT=6831
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
       - SERVICE_NAME=devsecops-backend
       - ENVIRONMENT=development
       - LOG_LEVEL=INFO
@@ -136,6 +220,8 @@ services:
       postgres:
         condition: service_healthy
       elasticsearch:
+        condition: service_healthy
+      logstash:
         condition: service_healthy
       jaeger:
         condition: service_healthy
@@ -148,15 +234,26 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 90s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
 
   # Frontend Tier (Tier 1)
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: devsecops-frontend-elk
+    container_name: devsecops-frontend
+    environment:
+      - BACKEND_URL=http://backend:5000
+      - NGINX_PORT=80
     ports:
       - "8080:80"
     depends_on:
@@ -165,17 +262,35 @@ services:
     networks:
       - devsecops-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 30s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
 
   # Prometheus for Metrics Collection
   prometheus:
     image: prom/prometheus:v2.47.0
     container_name: devsecops-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
     ports:
       - "9090:9090"
     networks:
@@ -183,6 +298,14 @@ services:
       - elk-network
       - devsecops-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
   # Grafana for Visualization
   grafana:
@@ -191,8 +314,12 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin123
       - GF_SECURITY_ADMIN_USER=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+      - GF_SECURITY_ALLOW_EMBEDDING=true
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "3000:3000"
     networks:
@@ -203,33 +330,64 @@ services:
       - elasticsearch
       - jaeger
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
   # Database Administration
   pgadmin:
     image: dpage/pgadmin4:latest
-    container_name: devsecops-pgadmin-elk
+    container_name: devsecops-pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@devsecops.local
       PGADMIN_DEFAULT_PASSWORD: admin123
       PGADMIN_LISTEN_PORT: 80
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: 'True'
+      PGADMIN_CONFIG_LOGIN_BANNER: "DevSecOps PostgreSQL Administration"
     ports:
       - "5050:80"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - devsecops-network
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
 
 # Network Configuration
 networks:
   devsecops-network:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
   elk-network:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.21.0.0/16
   monitoring-network:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.22.0.0/16
 
 # Volume Configuration
 volumes:
