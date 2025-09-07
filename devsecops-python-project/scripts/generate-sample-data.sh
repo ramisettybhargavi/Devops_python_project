@@ -1,226 +1,186 @@
 #!/bin/bash
+
+# Generate Sample Data Script
+# Creates test data and generates traces for observability testing
+
 set -e
 
-echo "=== Generating Sample Data for ELK & Jaeger Demo ==="
+echo "🎯 Generating Sample Data for DevSecOps Application"
+echo "=================================================="
 
-# Colors for output
+# Configuration
+BACKEND_URL="http://localhost:5000"
+FRONTEND_URL="http://localhost:8080"
+NUM_USERS=10
+NUM_REQUESTS=50
+
+# Color codes
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-print_status() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+# Function to generate random user data
+generate_user_data() {
+    local names=("Alice Johnson" "Bob Smith" "Carol Williams" "David Brown" "Eva Davis" "Frank Miller" "Grace Wilson" "Henry Moore" "Iris Taylor" "Jack Anderson")
+    local domains=("example.com" "test.org" "demo.net" "sample.io" "mock.dev")
+    
+    local name=${names[$((RANDOM % ${#names[@]}))]}
+    local first_name=$(echo $name | cut -d' ' -f1 | tr '[:upper:]' '[:lower:]')
+    local last_name=$(echo $name | cut -d' ' -f2 | tr '[:upper:]' '[:lower:]')
+    local domain=${domains[$((RANDOM % ${#domains[@]}))]}
+    local email="${first_name}.${last_name}@${domain}"
+    
+    echo "{\"name\":\"$name\",\"email\":\"$email\",\"password\":\"password123\"}"
 }
 
-print_step() {
-    echo -e "${BLUE}[STEP]${NC} $1"
+# Function to make traced request
+make_traced_request() {
+    local method=$1
+    local url=$2
+    local data=$3
+    local trace_id="trace-$(date +%s)-$RANDOM"
+    
+    if [ "$method" = "POST" ]; then
+        curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Trace-ID: $trace_id" \
+            -d "$data" \
+            "$url" || true
+    else
+        curl -s -H "X-Trace-ID: $trace_id" "$url" || true
+    fi
 }
 
-# Configuration
-BACKEND_URL="http://localhost:5000"
-TOTAL_USERS=50
-TOTAL_OPERATIONS=200
-
-print_step "1. Checking backend availability..."
-if ! curl -s -f "$BACKEND_URL/health" > /dev/null; then
-    echo "Backend not available at $BACKEND_URL"
-    echo "Please ensure the stack is running: docker-compose up -d"
+# Check if backend is available
+echo -e "${BLUE}Step 1: Checking backend availability${NC}"
+if ! curl -s "$BACKEND_URL/health" > /dev/null; then
+    echo -e "${RED}❌ Backend is not available at $BACKEND_URL${NC}"
+    echo "Please ensure the backend service is running"
     exit 1
 fi
+echo -e "${GREEN}✅ Backend is available${NC}"
 
-print_status "✅ Backend is available"
+# Create sample users
+echo ""
+echo -e "${BLUE}Step 2: Creating sample users${NC}"
+echo "--------------------------------"
 
-print_step "2. Creating sample users with tracing..."
-
-# Array of sample user data
-declare -a users=(
-    "John Doe:john.doe@company.com"
-    "Jane Smith:jane.smith@company.com" 
-    "Bob Johnson:bob.johnson@company.com"
-    "Alice Brown:alice.brown@company.com"
-    "Charlie Wilson:charlie.wilson@company.com"
-    "Diana Prince:diana.prince@company.com"
-    "ELK Admin:elk.admin@devsecops.com"
-    "Jaeger User:jaeger.user@devsecops.com"
-    "DevOps Engineer:devops@company.com"
-    "Security Analyst:security@company.com"
-)
-
-# Function to generate random trace ID
-generate_trace_id() {
-    echo "demo-$(date +%s)-$(shuf -i 1000-9999 -n 1)"
-}
-
-# Create users
-user_ids=()
-for i in $(seq 1 $TOTAL_USERS); do
-    if [ $i -le ${#users[@]} ]; then
-        # Use predefined user data
-        user_data="${users[$((i-1))]}"
-        name="${user_data%:*}"
-        email="${user_data#*:}"
+created_users=0
+for i in $(seq 1 $NUM_USERS); do
+    user_data=$(generate_user_data)
+    echo -n "Creating user $i... "
+    
+    response=$(make_traced_request "POST" "$BACKEND_URL/api/users" "$user_data")
+    
+    if echo "$response" | grep -q "successfully"; then
+        echo -e "${GREEN}✅ Created${NC}"
+        ((created_users++))
     else
-        # Generate random user data
-        name="Test User $i"
-        email="testuser$i@example.com"
+        echo -e "${YELLOW}⚠️ Skipped (may already exist)${NC}"
     fi
-
-    trace_id=$(generate_trace_id)
-
-    print_status "Creating user: $name ($trace_id)"
-
-    response=$(curl -s -X POST "$BACKEND_URL/api/users" \
-        -H "Content-Type: application/json" \
-        -H "X-Trace-ID: $trace_id" \
-        -d "{\"name\": \"$name\", \"email\": \"$email\"}" \
-        -w "%{http_code}")
-
-    if [ "${response: -3}" == "201" ]; then
-        # Extract user ID from response
-        user_id=$(echo "$response" | sed 's/201$//' | jq -r '.id' 2>/dev/null || echo "unknown")
-        user_ids+=("$user_id")
-        print_status "✅ Created user $name (ID: $user_id, Trace: $trace_id)"
-    else
-        print_status "⚠️  Failed to create user $name (Response: ${response: -3})"
-    fi
-
-    # Add small delay to avoid overwhelming the system
-    sleep 0.1
+    
+    # Small delay to avoid overwhelming the system
+    sleep 0.5
 done
 
-print_step "3. Performing various operations to generate traces..."
+echo "Created $created_users new users"
 
-# Array of operations to perform
-operations=("GET" "GET" "GET" "PUT" "DELETE")
-operation_weights=(50 30 10 8 2)  # Percentage weights
+# Generate API traffic for observability
+echo ""
+echo -e "${BLUE}Step 3: Generating API traffic${NC}"
+echo "--------------------------------"
 
-for i in $(seq 1 $TOTAL_OPERATIONS); do
-    # Select random operation based on weights
-    rand=$((RANDOM % 100))
-    if [ $rand -lt 50 ]; then
-        operation="GET"
-    elif [ $rand -lt 80 ]; then
-        operation="GET_LIST"
-    elif [ $rand -lt 90 ]; then
-        operation="PUT"
-    else
-        operation="DELETE"
-    fi
-
-    trace_id=$(generate_trace_id)
-
-    case $operation in
-        "GET")
-            # Get individual user
-            if [ ${#user_ids[@]} -gt 0 ]; then
-                user_id=${user_ids[$((RANDOM % ${#user_ids[@]}))]}
-                curl -s -X GET "$BACKEND_URL/api/users/$user_id" \
-                    -H "X-Trace-ID: $trace_id" > /dev/null
-                print_status "GET user $user_id (Trace: $trace_id)"
-            fi
+request_count=0
+for i in $(seq 1 $NUM_REQUESTS); do
+    echo -n "Request $i/$NUM_REQUESTS... "
+    
+    # Random API calls to generate traces
+    case $((RANDOM % 5)) in
+        0)
+            # Get all users
+            make_traced_request "GET" "$BACKEND_URL/api/users" > /dev/null
+            echo -e "${GREEN}GET /users${NC}"
             ;;
-        "GET_LIST")
-            # Get user list
-            page=$((RANDOM % 5 + 1))
-            curl -s -X GET "$BACKEND_URL/api/users?page=$page&per_page=10" \
-                -H "X-Trace-ID: $trace_id" > /dev/null
-            print_status "GET users list page $page (Trace: $trace_id)"
+        1)
+            # Get specific user
+            user_id=$((RANDOM % 10 + 1))
+            make_traced_request "GET" "$BACKEND_URL/api/users/$user_id" > /dev/null
+            echo -e "${GREEN}GET /users/$user_id${NC}"
             ;;
-        "PUT")
-            # Update user
-            if [ ${#user_ids[@]} -gt 0 ]; then
-                user_id=${user_ids[$((RANDOM % ${#user_ids[@]}))]}
-                new_name="Updated User $i"
-                curl -s -X PUT "$BACKEND_URL/api/users/$user_id" \
-                    -H "Content-Type: application/json" \
-                    -H "X-Trace-ID: $trace_id" \
-                    -d "{\"name\": \"$new_name\"}" > /dev/null
-                print_status "PUT user $user_id (Trace: $trace_id)"
-            fi
+        2)
+            # Health check
+            make_traced_request "GET" "$BACKEND_URL/health" > /dev/null
+            echo -e "${GREEN}GET /health${NC}"
             ;;
-        "DELETE")
-            # Delete user (only occasionally)
-            if [ ${#user_ids[@]} -gt 10 ]; then
-                user_id=${user_ids[$((RANDOM % ${#user_ids[@]}))]}
-                curl -s -X DELETE "$BACKEND_URL/api/users/$user_id" \
-                    -H "X-Trace-ID: $trace_id" > /dev/null
-                print_status "DELETE user $user_id (Trace: $trace_id)"
-                # Remove from array
-                user_ids=("${user_ids[@]/$user_id}")
-            fi
+        3)
+            # Observability status
+            make_traced_request "GET" "$BACKEND_URL/observability/status" > /dev/null
+            echo -e "${GREEN}GET /observability/status${NC}"
+            ;;
+        4)
+            # Metrics
+            make_traced_request "GET" "$BACKEND_URL/metrics" > /dev/null
+            echo -e "${GREEN}GET /metrics${NC}"
             ;;
     esac
-
-    # Add random delay
-    sleep $(echo "scale=2; $RANDOM/32767*0.5" | bc -l 2>/dev/null || echo "0.1")
+    
+    ((request_count++))
+    
+    # Random delay between requests
+    sleep $(echo "scale=2; $RANDOM/32767 * 2" | bc)
 done
 
-print_step "4. Generating some error scenarios for testing..."
+echo "Generated $request_count API requests"
 
-# Generate some 404 errors
-for i in {1..5}; do
-    trace_id=$(generate_trace_id)
-    curl -s -X GET "$BACKEND_URL/api/users/999$i" \
-        -H "X-Trace-ID: $trace_id" > /dev/null
-    print_status "Generated 404 error (Trace: $trace_id)"
-    sleep 0.2
-done
+# Test frontend connectivity
+echo ""
+echo -e "${BLUE}Step 4: Testing frontend connectivity${NC}"
+echo "---------------------------------------"
 
-# Generate some validation errors
-for i in {1..3}; do
-    trace_id=$(generate_trace_id)
-    curl -s -X POST "$BACKEND_URL/api/users" \
-        -H "Content-Type: application/json" \
-        -H "X-Trace-ID: $trace_id" \
-        -d "{\"name\": \"\", \"email\": \"invalid-email\"}" > /dev/null
-    print_status "Generated validation error (Trace: $trace_id)"
-    sleep 0.2
-done
+if curl -s "$FRONTEND_URL" > /dev/null; then
+    echo -e "${GREEN}✅ Frontend is accessible at $FRONTEND_URL${NC}"
+else
+    echo -e "${YELLOW}⚠️ Frontend may not be fully ready at $FRONTEND_URL${NC}"
+fi
 
-print_step "5. Checking observability data collection..."
+# Generate some errors for testing
+echo ""
+echo -e "${BLUE}Step 5: Generating test scenarios${NC}"
+echo "-----------------------------------"
 
-# Wait a bit for logs and traces to be processed
-print_status "Waiting 10 seconds for log and trace processing..."
-sleep 10
+echo -n "Testing 404 errors... "
+make_traced_request "GET" "$BACKEND_URL/api/nonexistent" > /dev/null
+make_traced_request "GET" "$BACKEND_URL/api/users/999999" > /dev/null
+echo -e "${GREEN}✅ Done${NC}"
 
-# Check Elasticsearch logs
-log_count=$(curl -s "http://localhost:9200/devsecops-logs-*/_count" | jq -r '.count' 2>/dev/null || echo "unknown")
-print_status "Elasticsearch logs collected: $log_count"
+echo -n "Testing invalid requests... "
+make_traced_request "POST" "$BACKEND_URL/api/users" '{"invalid":"data"}' > /dev/null
+make_traced_request "POST" "$BACKEND_URL/api/users" '{"name":"","email":"invalid"}' > /dev/null
+echo -e "${GREEN}✅ Done${NC}"
 
-# Check Jaeger traces
-jaeger_services=$(curl -s "http://localhost:16686/api/services" | jq -r '.data | length' 2>/dev/null || echo "unknown")
-print_status "Jaeger services discovered: $jaeger_services"
-
-print_step "6. Sample Data Generation Complete!"
-
-print_status "🎉 Sample data generation completed successfully!"
-print_status ""
-print_status "=== Generated Data ==="
-print_status "Users created: ~$TOTAL_USERS"
-print_status "Operations performed: $TOTAL_OPERATIONS"
-print_status "Logs in Elasticsearch: $log_count"
-print_status "Services in Jaeger: $jaeger_services"
-print_status ""
-print_status "=== Next Steps ==="
-print_status "1. View application logs in Kibana:"
-print_status "   http://localhost:5601"
-print_status "   - Go to 'Discover' tab"
-print_status "   - Select 'devsecops-logs-*' index pattern"
-print_status "   - Filter by log_level, trace_id, or other fields"
-print_status ""
-print_status "2. Analyze traces in Jaeger:"
-print_status "   http://localhost:16686"
-print_status "   - Select 'devsecops-backend' service"
-print_status "   - Look for traces with operations like GET, POST, PUT, DELETE"
-print_status "   - Click on traces to see detailed timing information"
-print_status ""
-print_status "3. View metrics in Grafana:"
-print_status "   http://localhost:3000 (admin/admin123)"
-print_status "   - Check 'DevSecOps ELK & Jaeger Overview' dashboard"
-print_status "   - Monitor HTTP request rates, response times, and error rates"
-print_status ""
-print_status "4. Monitor system health:"
-print_status "   - Backend API: http://localhost:5000/health"
-print_status "   - Elasticsearch: http://localhost:9200/_cluster/health"
-print_status "   - Jaeger: http://localhost:16686/api/services"
+# Summary
+echo ""
+echo -e "${GREEN}🎉 Sample Data Generation Complete!${NC}"
+echo "======================================"
+echo ""
+echo -e "${BLUE}📊 Generated Data Summary:${NC}"
+echo "- Users created: $created_users"
+echo "- API requests: $request_count"
+echo "- Test scenarios: Multiple error cases"
+echo ""
+echo -e "${BLUE}🔍 Where to View Data:${NC}"
+echo "- Application: $FRONTEND_URL"
+echo "- API Health: $BACKEND_URL/health"
+echo "- Logs (Kibana): http://localhost:5601"
+echo "- Traces (Jaeger): http://localhost:16686"
+echo "- Metrics (Grafana): http://localhost:3000"
+echo ""
+echo -e "${BLUE}💡 Tips:${NC}"
+echo "1. Wait 2-3 minutes for logs to appear in Kibana"
+echo "2. Check Jaeger for distributed traces"
+echo "3. View real-time metrics in Grafana"
+echo "4. Look for trace IDs in application logs"
+echo ""
+echo -e "${GREEN}Ready to explore your observability stack! 🚀${NC}"
