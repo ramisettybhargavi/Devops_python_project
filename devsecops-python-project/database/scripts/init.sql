@@ -1,13 +1,5 @@
--- DevSecOps 3-Tier Database Initialization with ELK & Jaeger
--- PostgreSQL database setup script
-
--- Create database (run as superuser)
--- CREATE DATABASE devsecops_db;
--- CREATE USER devsecops_user WITH PASSWORD 'secure_password_123';
--- GRANT ALL PRIVILEGES ON DATABASE devsecops_db TO devsecops_user;
-
--- Connect to devsecops_db
-\c devsecops_db;
+-- DevSecOps Database Initialization Script
+-- Creates tables and initial data for the 3-tier application
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -17,44 +9,33 @@ CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     email VARCHAR(120) UNIQUE NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    password_hash VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN DEFAULT TRUE
 );
 
--- Create audit_logs table for security tracking with trace correlation
+-- Create audit_logs table
 CREATE TABLE IF NOT EXISTS audit_logs (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id),
     action VARCHAR(50) NOT NULL,
     resource VARCHAR(50) NOT NULL,
     details TEXT,
-    ip_address VARCHAR(45),
-    trace_id VARCHAR(100),  -- For Jaeger trace correlation
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create observability_metrics table for application metrics
-CREATE TABLE IF NOT EXISTS observability_metrics (
-    id SERIAL PRIMARY KEY,
-    metric_name VARCHAR(100) NOT NULL,
-    metric_value DECIMAL NOT NULL,
-    labels JSONB,
+    ip_address INET,
     trace_id VARCHAR(100),
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create indexes for performance
+-- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active);
-CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_trace_id ON audit_logs(trace_id);
-CREATE INDEX IF NOT EXISTS idx_observability_metrics_name ON observability_metrics(metric_name);
-CREATE INDEX IF NOT EXISTS idx_observability_metrics_timestamp ON observability_metrics(timestamp);
-CREATE INDEX IF NOT EXISTS idx_observability_metrics_trace_id ON observability_metrics(trace_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
 
--- Create function to update updated_at timestamp
+-- Create function to update timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -71,56 +52,31 @@ CREATE TRIGGER update_users_updated_at
     EXECUTE FUNCTION update_updated_at_column();
 
 -- Insert sample data
-INSERT INTO users (name, email) VALUES
-    ('John Doe', 'john.doe@example.com'),
-    ('Jane Smith', 'jane.smith@example.com'),
-    ('Bob Johnson', 'bob.johnson@example.com'),
-    ('Alice Brown', 'alice.brown@example.com'),
-    ('Charlie Wilson', 'charlie.wilson@example.com'),
-    ('Diana Prince', 'diana.prince@example.com'),
-    ('ELK Stack User', 'elk@devsecops.com'),
-    ('Jaeger User', 'jaeger@devsecops.com')
+INSERT INTO users (name, email, password_hash) VALUES 
+    ('John Doe', 'john.doe@example.com', 'pbkdf2:sha256:260000$example$hash'),
+    ('Jane Smith', 'jane.smith@example.com', 'pbkdf2:sha256:260000$example$hash'),
+    ('Bob Johnson', 'bob.johnson@example.com', 'pbkdf2:sha256:260000$example$hash')
 ON CONFLICT (email) DO NOTHING;
 
--- Insert sample observability metrics
-INSERT INTO observability_metrics (metric_name, metric_value, labels) VALUES
-    ('app_startup_time', 2.5, '{"component": "backend", "environment": "development"}'),
-    ('database_connections', 5, '{"pool": "main", "status": "active"}'),
-    ('elk_integration_status', 1, '{"component": "logstash", "status": "healthy"}'),
-    ('jaeger_integration_status', 1, '{"component": "jaeger", "status": "healthy"}');
+-- Insert sample audit logs
+INSERT INTO audit_logs (user_id, action, resource, details, ip_address, trace_id) VALUES 
+    (1, 'CREATE', 'user', 'Initial user creation', '127.0.0.1', 'trace-init-001'),
+    (2, 'CREATE', 'user', 'Initial user creation', '127.0.0.1', 'trace-init-002'),
+    (3, 'CREATE', 'user', 'Initial user creation', '127.0.0.1', 'trace-init-003');
 
--- Create read-only user for monitoring
-CREATE USER monitoring_user WITH PASSWORD 'monitoring_pass_123';
-GRANT CONNECT ON DATABASE devsecops_db TO monitoring_user;
-GRANT USAGE ON SCHEMA public TO monitoring_user;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO monitoring_user;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO monitoring_user;
+-- Create view for active users
+CREATE OR REPLACE VIEW active_users AS
+SELECT id, name, email, created_at, updated_at
+FROM users
+WHERE is_active = TRUE;
 
--- Security configurations
--- Enable row level security (can be customized based on requirements)
--- ALTER TABLE users ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+-- Grant permissions
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO devsecops_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON audit_logs TO devsecops_user;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO devsecops_user;
+GRANT SELECT ON active_users TO devsecops_user;
 
--- Grant permissions to application user
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO devsecops_user;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO devsecops_user;
-
--- Create view for observability dashboard
-CREATE OR REPLACE VIEW observability_summary AS
-SELECT 
-    DATE_TRUNC('hour', timestamp) as hour,
-    COUNT(*) as total_operations,
-    COUNT(DISTINCT trace_id) as unique_traces,
-    AVG(CASE WHEN action = 'CREATE' THEN 1 ELSE 0 END) as create_rate,
-    AVG(CASE WHEN action = 'READ' THEN 1 ELSE 0 END) as read_rate,
-    AVG(CASE WHEN action = 'UPDATE' THEN 1 ELSE 0 END) as update_rate,
-    AVG(CASE WHEN action = 'DELETE' THEN 1 ELSE 0 END) as delete_rate
-FROM audit_logs 
-WHERE timestamp >= NOW() - INTERVAL '24 hours'
-GROUP BY DATE_TRUNC('hour', timestamp)
-ORDER BY hour DESC;
-
-GRANT SELECT ON observability_summary TO monitoring_user;
-GRANT SELECT ON observability_summary TO devsecops_user;
-
-COMMIT;
+-- Display initialization status
+SELECT 'Database initialized successfully!' as status;
+SELECT COUNT(*) as user_count FROM users;
+SELECT COUNT(*) as audit_log_count FROM audit_logs;
