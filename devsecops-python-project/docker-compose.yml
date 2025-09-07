@@ -52,8 +52,9 @@ services:
       - action.auto_create_index=true
       - cluster.routing.allocation.disk.threshold_enabled=false
       - http.host=0.0.0.0
-      - transport.host=127.0.0.1
-      - network.publish_host=_local_
+      - transport.host=0.0.0.0 #127.0.0.1
+      - network.host=0.0.0.0
+      #- network.publish_host=_local_
     ulimits:
       memlock:
         soft: -1
@@ -181,7 +182,8 @@ services:
       - "14250:14250"    # Collector gRPC
       - "9411:9411"      # Zipkin
       - "16686:16686"    # UI
-      - "14269:14269"    # Admin port
+      - "14269:14269"
+      - "4317:4317"    # Admin port
     networks:
       - elk-network
       - monitoring-network
