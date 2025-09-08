@@ -1,7 +1,10 @@
+# Updated Backend main.py with Enhanced Health Check for Observability
+
 #!/usr/bin/env python3
 """
 DevSecOps 3-Tier Application - Backend API with ELK & Jaeger Integration
 Flask REST API with PostgreSQL database, ELK logging, and Jaeger tracing
+FIXED: Enhanced health checks and observability status endpoints
 """
 from flask import Flask, jsonify, request, g
 from flask_cors import CORS
@@ -12,6 +15,7 @@ import logging
 import os
 import time
 import uuid
+import requests
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from pythonjsonlogger import jsonlogger
@@ -117,7 +121,7 @@ with app.app_context():
     SQLAlchemyInstrumentor().instrument(engine=db.engine)
 RequestsInstrumentor().instrument()
 
-# Database Models
+# Database Models (same as before)
 class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
@@ -170,7 +174,86 @@ class AuditLog(db.Model):
             'timestamp': self.timestamp.isoformat() if self.timestamp else None
         }
 
-# Middleware for request tracking and tracing
+# NEW: Enhanced observability status checking functions
+def check_elasticsearch_health():
+    """Check Elasticsearch cluster health"""
+    try:
+        start_time = time.time()
+        response = requests.get(f"{app.config['ELASTICSEARCH_URL']}/_cluster/health", timeout=10)
+        response_time = time.time() - start_time
+        
+        if response.status_code == 200:
+            health_data = response.json()
+            return {
+                'healthy': health_data.get('status') in ['green', 'yellow'],
+                'status': health_data.get('status'),
+                'response_time': response_time,
+                'details': f"Cluster: {health_data.get('cluster_name')}, Nodes: {health_data.get('number_of_nodes')}"
+            }
+        else:
+            return {'healthy': False, 'status': 'error', 'response_time': response_time, 'details': f'HTTP {response.status_code}'}
+    except Exception as e:
+        return {'healthy': False, 'status': 'error', 'response_time': None, 'details': str(e)}
+
+def check_jaeger_health():
+    """Check Jaeger collector health"""
+    try:
+        start_time = time.time()
+        # Check Jaeger health endpoint
+        response = requests.get('http://jaeger:14269/', timeout=10)
+        response_time = time.time() - start_time
+        
+        return {
+            'healthy': response.status_code == 200,
+            'status': 'healthy' if response.status_code == 200 else 'error',
+            'response_time': response_time,
+            'details': f'HTTP {response.status_code}'
+        }
+    except Exception as e:
+        return {'healthy': False, 'status': 'error', 'response_time': None, 'details': str(e)}
+
+def check_logstash_health():
+    """Check Logstash health"""
+    try:
+        start_time = time.time()
+        response = requests.get('http://logstash:9600/_node/stats', timeout=10)
+        response_time = time.time() - start_time
+        
+        if response.status_code == 200:
+            stats = response.json()
+            return {
+                'healthy': True,
+                'status': 'healthy',
+                'response_time': response_time,
+                'details': f"Pipeline: {stats.get('pipeline', {}).get('events', {}).get('in', 0)} events"
+            }
+        else:
+            return {'healthy': False, 'status': 'error', 'response_time': response_time, 'details': f'HTTP {response.status_code}'}
+    except Exception as e:
+        return {'healthy': False, 'status': 'error', 'response_time': None, 'details': str(e)}
+
+def check_kibana_health():
+    """Check Kibana health"""
+    try:
+        start_time = time.time()
+        response = requests.get('http://kibana:5601/api/status', timeout=10)
+        response_time = time.time() - start_time
+        
+        if response.status_code == 200:
+            status_data = response.json()
+            overall_status = status_data.get('status', {}).get('overall', {}).get('state', 'unknown')
+            return {
+                'healthy': overall_status == 'green',
+                'status': overall_status,
+                'response_time': response_time,
+                'details': f"Status: {overall_status}"
+            }
+        else:
+            return {'healthy': False, 'status': 'error', 'response_time': response_time, 'details': f'HTTP {response.status_code}'}
+    except Exception as e:
+        return {'healthy': False, 'status': 'error', 'response_time': None, 'details': str(e)}
+
+# Middleware for request tracking and tracing (same as before)
 @app.before_request
 def before_request():
     request.start_time = time.time()
@@ -231,38 +314,59 @@ def after_request(response):
 
     return response
 
-# Health check endpoint
+# ENHANCED: Health check endpoint with observability status
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint for monitoring and load balancers"""
+    """Enhanced health check endpoint with observability stack status"""
     try:
+        # Check database connectivity
         with app.app_context():
             db.session.execute(text('SELECT 1'))
 
+        # Check observability stack
+        observability_status = {
+            'elasticsearch': check_elasticsearch_health(),
+            'jaeger': check_jaeger_health(),
+            'logstash': check_logstash_health(),
+            'kibana': check_kibana_health()
+        }
+
+        # Determine overall health
+        all_healthy = all(service['healthy'] for service in observability_status.values())
+        database_healthy = True  # We've already tested this above
+
+        overall_healthy = database_healthy and all_healthy
+
         health_status = {
-            'status': 'healthy',
+            'status': 'healthy' if overall_healthy else 'degraded',
             'timestamp': datetime.utcnow().isoformat(),
             'service': 'devsecops-backend',
             'version': '1.0.0',
+            'uptime': time.time() - app.start_time if hasattr(app, 'start_time') else 0,
             'checks': {
-                'database': 'connected',
+                'database': 'connected' if database_healthy else 'disconnected',
                 'application': 'running'
             },
+            'observability': observability_status,
             'trace_id': getattr(g, 'trace_id', None)
         }
 
-        logger.info("Health check successful", extra={'trace_id': health_status['trace_id']})
-        return jsonify(health_status), 200
+        status_code = 200 if overall_healthy else 503
+        logger.info(f"Health check completed - Status: {health_status['status']}", 
+                   extra={'trace_id': health_status['trace_id']})
+        
+        return jsonify(health_status), status_code
 
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}", extra={'trace_id': getattr(g, 'trace_id', None)})
         return jsonify({
             'status': 'unhealthy',
             'timestamp': datetime.utcnow().isoformat(),
-            'error': str(e)
+            'error': str(e),
+            'trace_id': getattr(g, 'trace_id', None)
         }), 503
 
-# Prometheus metrics endpoint
+# Prometheus metrics endpoint (same as before)
 @app.route('/metrics', methods=['GET'])
 def metrics():
     """Prometheus metrics endpoint"""
@@ -274,17 +378,25 @@ def metrics():
         logger.error(f"Metrics endpoint failed: {str(e)}", extra={'trace_id': getattr(g, 'trace_id', None)})
         return jsonify({'error': 'Metrics unavailable'}), 500
 
-# Sample CRUD endpoints
+# Sample CRUD endpoints (same as before)
 @app.route('/api/users', methods=['GET'])
 def get_users():
     try:
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 10, type=int), 100)  # Max 100 per page
+        
         DB_OPERATIONS.labels(operation='SELECT', table='users').inc()
-        users = User.query.filter_by(is_active=True).all()
-
+        users_query = User.query.filter_by(is_active=True)
+        pagination = users_query.paginate(
+            page=page, per_page=per_page, error_out=False
+        )
+        
+        users = pagination.items
+        
         audit_log = AuditLog(
             action='LIST_USERS',
             resource='users',
-            details=f'Retrieved {len(users)} users',
+            details=f'Retrieved {len(users)} users (page {page})',
             ip_address=request.remote_addr,
             trace_id=getattr(g, 'trace_id', None)
         )
@@ -293,7 +405,14 @@ def get_users():
 
         return jsonify({
             'users': [u.to_dict() for u in users],
-            'count': len(users),
+            'pagination': {
+                'page': page,
+                'pages': pagination.pages,
+                'per_page': per_page,
+                'total': pagination.total,
+                'has_next': pagination.has_next,
+                'has_prev': pagination.has_prev
+            },
             'trace_id': getattr(g, 'trace_id', None)
         }), 200
 
@@ -348,7 +467,7 @@ def wait_for_db(app, max_retries=30):
     for attempt in range(max_retries):
         try:
             with app.app_context():
-                db.session.execute('SELECT 1')
+                db.session.execute(text('SELECT 1'))
             logger.info("Database connection successful")
             return True
         except sqlalchemy.exc.OperationalError:
@@ -357,6 +476,9 @@ def wait_for_db(app, max_retries=30):
     return False
 
 if __name__ == '__main__':
+    # Store application start time for uptime calculation
+    app.start_time = time.time()
+    
     if not wait_for_db(app):
         logger.error("Could not connect to the database after maximum retries")
         exit(1)
@@ -366,7 +488,7 @@ if __name__ == '__main__':
 
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('DEBUG', 'false').lower() == 'true'
-    logger.info("Starting DevSecOps Backend API with ELK & Jaeger", extra={
+    logger.info("Starting DevSecOps Backend API with Enhanced Observability", extra={
         "port": port,
         "debug": debug,
         "elasticsearch_url": app.config['ELASTICSEARCH_URL'],
