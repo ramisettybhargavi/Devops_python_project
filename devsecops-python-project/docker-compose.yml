@@ -122,8 +122,8 @@ services:
       - transport.host=0.0.0.0
       - network.host=0.0.0.0
       # Ensure proper index creation and recovery
-      - cluster.initial_master_nodes=devsecops-es-node
-      - gateway.recover_after_nodes=1
+      #- cluster.initial_master_nodes=devsecops-es-node
+      - gateway.recover_after_data_nodes=1
     ulimits:
       memlock:
         soft: -1
@@ -208,7 +208,7 @@ services:
     restart: unless-stopped
 
   jaeger:
-    image: jaegertracing/jaeger-all-in-one:1.53
+    image: jaegertracing/all-in-one:1.53
     container_name: devsecops-jaeger
     environment:
       # FIXED: Enable proper index template creation
