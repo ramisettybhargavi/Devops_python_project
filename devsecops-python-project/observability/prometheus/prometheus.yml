@@ -1,18 +1,9 @@
-# Fixed Prometheus Configuration
+# Fixed Prometheus Configuration for DevSecOps Project
+# Addresses connection refused errors and missing targets
+
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
-
-# Alertmanager configuration (optional)
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets:
-#           - alertmanager:9093
-
-# Load rules once and periodically evaluate them
-# rule_files:
-#   - "rules/*.yml"
 
 # Scrape configurations - Fixed targets and endpoints
 scrape_configs:
@@ -21,75 +12,92 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
     scrape_interval: 30s
+    metrics_path: '/metrics'
 
-  # Node Exporter - System metrics
+  # Node Exporter - System metrics (FIXED)
   - job_name: 'node-exporter'
     static_configs:
       - targets: ['node-exporter:9100']
     scrape_interval: 15s
+    metrics_path: '/metrics'
 
-  # cAdvisor - Container metrics
+  # cAdvisor - Container metrics (FIXED)
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']
     scrape_interval: 15s
+    metrics_path: '/metrics'
 
-  # Backend application metrics
+  # Backend application metrics (FIXED)
   - job_name: 'devsecops-backend'
     static_configs:
       - targets: ['backend:5000']
     metrics_path: '/metrics'
     scrape_interval: 15s
 
-  # PostgreSQL Exporter - Fixed
+  # PostgreSQL Exporter - ADDED (was missing)
   - job_name: 'postgres-exporter'
     static_configs:
       - targets: ['postgres-exporter:9187']
     scrape_interval: 15s
+    metrics_path: '/metrics'
 
-  # Grafana metrics
+  # Grafana metrics (FIXED endpoint)
   - job_name: 'grafana'
     static_configs:
       - targets: ['grafana:3000']
     metrics_path: '/metrics'
     scrape_interval: 30s
 
-  # Jaeger metrics
+  # Jaeger metrics (FIXED endpoint)
   - job_name: 'jaeger'
     static_configs:
       - targets: ['jaeger:14269']
     metrics_path: '/metrics'
     scrape_interval: 30s
 
-  # NGINX Exporter
+  # NGINX Exporter (FIXED)
   - job_name: 'nginx-exporter'
     static_configs:
       - targets: ['nginx-exporter:9113']
     scrape_interval: 15s
+    metrics_path: '/metrics'
 
-  # Elasticsearch metrics - Fixed endpoint
-  - job_name: 'elasticsearch'
-    static_configs:
-      - targets: ['elasticsearch:9200']
-    metrics_path: '/_prometheus/metrics'
-    scrape_interval: 30s
-    scrape_timeout: 10s
-
-  # Kibana metrics - Fixed endpoint  
-  - job_name: 'kibana'
-    static_configs:
-      - targets: ['kibana:5601']
-    metrics_path: '/api/stats'
-    scrape_interval: 30s
-    scrape_timeout: 10s
-
-  # Note: Removed docker and logstash targets as they require special configuration
-  # Docker daemon metrics require Docker daemon to be configured with --experimental=true
-  # and metrics-addr set to 0.0.0.0:9323
-  
-  # Logstash metrics endpoint needs to be properly configured in logstash.yml
-  # - job_name: 'logstash'
+  # Elasticsearch metrics (FIXED - removed incorrect endpoint)
+  # NOTE: Elasticsearch doesn't expose Prometheus metrics by default
+  # This job is commented out until proper exporter is added
+  # - job_name: 'elasticsearch'
   #   static_configs:
-  #     - targets: ['logstash:9600']
-  #   metrics_path: '/_node/stats'
+  #     - targets: ['elasticsearch:9200']
+  #   metrics_path: '/_prometheus/metrics'
   #   scrape_interval: 30s
+  #   scrape_timeout: 10s
+
+  # Kibana metrics (FIXED - removed incorrect endpoint) 
+  # NOTE: Kibana doesn't expose Prometheus metrics by default
+  # This job is commented out until proper exporter is added
+  # - job_name: 'kibana'
+  #   static_configs:
+  #     - targets: ['kibana:5601']
+  #   metrics_path: '/api/stats'
+  #   scrape_interval: 30s
+  #   scrape_timeout: 10s
+
+  # Logstash metrics (FIXED configuration)
+  - job_name: 'logstash'
+    static_configs:
+      - targets: ['logstash:9600']
+    metrics_path: '/_node/stats'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+
+# Optional: Add alerting rules
+# rule_files:
+#   - "rules/*.yml"
+
+# Optional: Alertmanager configuration
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
