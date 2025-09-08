@@ -1,12 +1,47 @@
-// DevSecOps Frontend Application JavaScript
-// Handles API communication, trace propagation, and UI updates
+// FIXED DevSecOps Frontend Application JavaScript
+// Addresses hardcoded localhost URLs and adds dynamic configuration
 
 class DevSecOpsApp {
     constructor() {
-        this.baseURL = 'http://localhost:5000';
+        // FIXED: Use environment-based configuration instead of hardcoded localhost
+        this.config = this.getConfiguration();
+        this.baseURL = this.config.backendUrl;
         this.traceId = this.generateTraceId();
         this.currentPage = 1;
         this.init();
+    }
+
+    // NEW: Dynamic configuration based on environment
+    getConfiguration() {
+        // Check if running in development or production
+        const hostname = window.location.hostname;
+        const protocol = window.location.protocol;
+        
+        // Try to get configuration from environment variables or meta tags
+        const backendUrl = document.querySelector('meta[name="backend-url"]')?.content || 
+                          this.getBackendUrl(hostname, protocol);
+        
+        const publicIP = document.querySelector('meta[name="public-ip"]')?.content || hostname;
+        
+        return {
+            backendUrl: backendUrl,
+            publicIP: publicIP,
+            kibanaUrl: `${protocol}//${publicIP}:5601`,
+            jaegerUrl: `${protocol}//${publicIP}:16686`,
+            grafanaUrl: `${protocol}//${publicIP}:3000`,
+            elasticsearchUrl: `${protocol}//${publicIP}:9200`,
+            prometheusUrl: `${protocol}//${publicIP}:9090`
+        };
+    }
+
+    // NEW: Smart backend URL detection
+    getBackendUrl(hostname, protocol) {
+        if (hostname === 'localhost' || hostname === '127.0.0.1') {
+            return `${protocol}//localhost:5000`;
+        } else {
+            // For EC2 deployment, use the same host with port 5000
+            return `${protocol}//${hostname}:5000`;
+        }
     }
 
     generateTraceId() {
@@ -15,6 +50,7 @@ class DevSecOpsApp {
 
     init() {
         this.updateTraceIdDisplay();
+        this.updateObservabilityLinks(); // NEW: Update observability links
         this.refreshHealthStatus();
         this.loadUsers();
         this.startMetricsPolling();
@@ -24,6 +60,45 @@ class DevSecOpsApp {
             this.refreshHealthStatus();
             this.updateMetrics();
         }, 30000); // Every 30 seconds
+    }
+
+    // NEW: Update observability links with correct URLs
+    updateObservabilityLinks() {
+        const links = {
+            'kibana-link': this.config.kibanaUrl,
+            'jaeger-link': this.config.jaegerUrl,
+            'grafana-link': this.config.grafanaUrl,
+            'elasticsearch-link': this.config.elasticsearchUrl,
+            'prometheus-link': this.config.prometheusUrl
+        };
+
+        Object.entries(links).forEach(([id, url]) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.href = url;
+                element.target = '_blank';
+            }
+        });
+
+        // Update any display elements showing URLs
+        this.updateUrlDisplays();
+    }
+
+    // NEW: Update URL displays in the UI
+    updateUrlDisplays() {
+        const displays = {
+            'kibana-url-display': this.config.kibanaUrl,
+            'jaeger-url-display': this.config.jaegerUrl,
+            'grafana-url-display': this.config.grafanaUrl,
+            'elasticsearch-url-display': this.config.elasticsearchUrl
+        };
+
+        Object.entries(displays).forEach(([id, url]) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = url;
+            }
+        });
     }
 
     updateTraceIdDisplay() {
@@ -60,7 +135,7 @@ class DevSecOpsApp {
             return response;
         } catch (error) {
             console.error('Request failed:', error);
-            this.showAlert('Network error occurred', 'danger');
+            this.showAlert('Network error occurred. Please check if the backend service is running.', 'danger');
             throw error;
         }
     }
@@ -102,11 +177,11 @@ class DevSecOpsApp {
                 const serviceName = service.charAt(0).toUpperCase() + service.slice(1);
                 
                 observabilityHtml += `
-                    <div class="col-md-3 mb-2">
+                    <div class="col-md-6 mb-2">
                         <div class="d-flex align-items-center">
-                            <span class="status-indicator ${serviceClass}"></span>
-                            <span>${serviceName}</span>
-                            ${status.response_time ? `<small class="ms-auto text-muted">${Math.round(status.response_time * 1000)}ms</small>` : ''}
+                            <span class="badge ${serviceClass} me-2">${serviceHealthy ? '✓' : '✗'}</span>
+                            <span class="fw-medium">${serviceName}</span>
+                            ${status.response_time ? `<small class="text-muted ms-auto">${Math.round(status.response_time * 1000)}ms</small>` : ''}
                         </div>
                     </div>
                 `;
@@ -114,18 +189,21 @@ class DevSecOpsApp {
         }
 
         container.innerHTML = `
-            <div class="col-md-6">
-                <div class="alert alert-${statusClass} mb-0">
+            <div class="alert alert-${statusClass} mb-3">
+                <div class="d-flex align-items-center">
                     <i class="fas fa-${statusIcon} me-2"></i>
-                    <strong>System Status: ${healthData.status.toUpperCase()}</strong>
-                    <br>
-                    <small>Last updated: ${new Date(healthData.timestamp).toLocaleString()}</small>
-                    <br>
-                    <small>Uptime: ${Math.round(healthData.uptime || 0)} seconds</small>
+                    <div>
+                        <strong>System Status: ${healthData.status.toUpperCase()}</strong><br>
+                        <small>Last updated: ${new Date(healthData.timestamp).toLocaleString()}</small><br>
+                        <small>Uptime: ${Math.round(healthData.uptime || 0)} seconds</small>
+                    </div>
                 </div>
             </div>
-            <div class="col-md-6">
-                <h6>Observability Stack:</h6>
+            
+            <div class="row">
+                <div class="col-12">
+                    <h6 class="fw-bold mb-3">Observability Stack:</h6>
+                </div>
                 <div class="row">
                     ${observabilityHtml}
                 </div>
@@ -138,12 +216,13 @@ class DevSecOpsApp {
         if (!container) return;
 
         container.innerHTML = `
-            <div class="col-12">
-                <div class="alert alert-danger mb-0">
+            <div class="alert alert-danger">
+                <div class="d-flex align-items-center">
                     <i class="fas fa-exclamation-triangle me-2"></i>
-                    <strong>Unable to fetch system health status</strong>
-                    <br>
-                    <small>Please check if the backend service is running</small>
+                    <div>
+                        <strong>Unable to fetch system health status</strong><br>
+                        <small>Please check if the backend service is running at ${this.baseURL}</small>
+                    </div>
                 </div>
             </div>
         `;
@@ -170,9 +249,7 @@ class DevSecOpsApp {
         if (users.length === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="6" class="text-center text-muted">
-                        <i class="fas fa-user-slash"></i> No users found
-                    </td>
+                    <td colspan="6" class="text-center">No users found</td>
                 </tr>
             `;
             return;
@@ -190,17 +267,15 @@ class DevSecOpsApp {
                     </span>
                 </td>
                 <td>
-                    <div class="btn-group btn-group-sm">
-                        <button class="btn btn-outline-primary" onclick="app.viewUser(${user.id})" title="View">
-                            <i class="fas fa-eye"></i>
-                        </button>
-                        <button class="btn btn-outline-warning" onclick="app.editUser(${user.id})" title="Edit">
-                            <i class="fas fa-edit"></i>
-                        </button>
-                        <button class="btn btn-outline-danger" onclick="app.deleteUser(${user.id})" title="Delete">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </div>
+                    <button class="btn btn-sm btn-outline-primary me-1" onclick="app.viewUser(${user.id})" title="View">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-warning me-1" onclick="app.editUser(${user.id})" title="Edit">
+                        <i class="fas fa-edit"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="app.deleteUser(${user.id})" title="Delete">
+                        <i class="fas fa-trash"></i>
+                    </button>
                 </td>
             </tr>
         `).join('');
@@ -213,7 +288,8 @@ class DevSecOpsApp {
         tbody.innerHTML = `
             <tr>
                 <td colspan="6" class="text-center text-danger">
-                    <i class="fas fa-exclamation-triangle"></i> Failed to load users
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    Failed to load users. Backend service may be unavailable.
                 </td>
             </tr>
         `;
@@ -229,7 +305,7 @@ class DevSecOpsApp {
         if (pagination.has_prev) {
             paginationHtml += `
                 <li class="page-item">
-                    <a class="page-link" href="#" onclick="app.loadUsers(${pagination.page - 1})">Previous</a>
+                    <a class="page-link" href="#" onclick="app.loadUsers(${pagination.page - 1}); return false;">Previous</a>
                 </li>
             `;
         }
@@ -239,7 +315,7 @@ class DevSecOpsApp {
             const isActive = i === pagination.page;
             paginationHtml += `
                 <li class="page-item ${isActive ? 'active' : ''}">
-                    <a class="page-link" href="#" onclick="app.loadUsers(${i})">${i}</a>
+                    <a class="page-link" href="#" onclick="app.loadUsers(${i}); return false;">${i}</a>
                 </li>
             `;
         }
@@ -248,7 +324,7 @@ class DevSecOpsApp {
         if (pagination.has_next) {
             paginationHtml += `
                 <li class="page-item">
-                    <a class="page-link" href="#" onclick="app.loadUsers(${pagination.page + 1})">Next</a>
+                    <a class="page-link" href="#" onclick="app.loadUsers(${pagination.page + 1}); return false;">Next</a>
                 </li>
             `;
         }
@@ -348,7 +424,7 @@ class DevSecOpsApp {
         alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
         alertDiv.innerHTML = `
             ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
         `;
 
         document.body.appendChild(alertDiv);
@@ -384,9 +460,13 @@ class DevSecOpsApp {
         const totalRequests = Math.floor(Math.random() * 10000) + 1000;
         const errorRate = (Math.random() * 5).toFixed(2);
 
-        document.getElementById('responseTimeMetric').textContent = responseTime;
-        document.getElementById('totalRequestsMetric').textContent = totalRequests.toLocaleString();
-        document.getElementById('errorRateMetric').textContent = errorRate + '%';
+        const responseTimeElement = document.getElementById('responseTimeMetric');
+        const totalRequestsElement = document.getElementById('totalRequestsMetric');
+        const errorRateElement = document.getElementById('errorRateMetric');
+
+        if (responseTimeElement) responseTimeElement.textContent = responseTime;
+        if (totalRequestsElement) totalRequestsElement.textContent = totalRequests.toLocaleString();
+        if (errorRateElement) errorRateElement.textContent = errorRate + '%';
     }
 }
 
@@ -406,4 +486,7 @@ function createUser() {
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
     window.app = new DevSecOpsApp();
+    
+    // Display configuration info in console for debugging
+    console.log('DevSecOps App Configuration:', window.app.config);
 });
