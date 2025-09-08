@@ -50,6 +50,7 @@ def setup_logging():
 # Setup OpenTelemetry tracing using OTLP exporter (modern)
 def setup_tracing():
     """Setup OpenTelemetry distributed tracing with OTLP"""
+    # Use OTLP endpoint (modern approach)
     otlp_endpoint = os.environ.get('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://jaeger:4317')
     insecure = os.environ.get('OTEL_EXPORTER_OTLP_INSECURE', 'true').lower() == 'true'
     service_name = os.environ.get('SERVICE_NAME', 'devsecops-backend')
@@ -63,18 +64,25 @@ def setup_tracing():
     provider = TracerProvider(resource=resource)
     trace.set_tracer_provider(provider)
 
-    # Create OTLP exporter
+    # Create OTLP exporter with proper configuration
     otlp_exporter = OTLPSpanExporter(
         endpoint=otlp_endpoint,
         insecure=insecure,
+        # Add headers if needed for authentication
+        headers={}
     )
 
-    # Create span processor
-    span_processor = BatchSpanProcessor(otlp_exporter)
+    # Create span processor with optimized batch settings
+    span_processor = BatchSpanProcessor(
+        otlp_exporter,
+        max_queue_size=2048,
+        max_export_batch_size=512,
+        export_timeout=30,
+        schedule_delay=5
+    )
     provider.add_span_processor(span_processor)
 
     return trace.get_tracer(__name__)
-
 # Initialize logging and tracing
 logger = setup_logging()
 tracer = setup_tracing()
