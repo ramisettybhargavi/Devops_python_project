@@ -1,7 +1,7 @@
 FROM postgres:15-alpine
 
 # Install bash and other tools
-RUN apk add --no-cache bash curl
+RUN apk add --no-cache bash curl icu-libs
 
 # Copy migration scripts
 COPY scripts/ /scripts/
