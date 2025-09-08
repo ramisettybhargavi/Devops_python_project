@@ -35,7 +35,7 @@ elasticsearch.shardTimeout: 30000
 
 # UI Settings
 server.rewriteBasePath: false
-server.basePath: ""
+#server.basePath: ""
 
 # CSV export settings
 xpack.reporting.csv.maxSizeBytes: 10485760
