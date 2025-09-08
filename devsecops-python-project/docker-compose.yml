@@ -95,8 +95,9 @@ services:
       - cluster.name=devsecops-elk-cluster
       - discovery.type=single-node
       - bootstrap.memory_lock=true
-      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
-      - xpack.monitoring.enabled=true
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+      - xpack.profiling.enabled=false                                                                                                                                                    
+      - xpack.monitoring.templates.enabled=true 
       - xpack.security.enabled=false
       - xpack.security.enrollment.enabled=false
       - action.auto_create_index=true
@@ -191,7 +192,7 @@ services:
       - COLLECTOR_OTLP_ENABLED=true
       - SPAN_STORAGE_TYPE=elasticsearch
       - ES_SERVER_URLS=http://elasticsearch:9200
-      - ES_CREATE_INDEX_TEMPLATES=true
+      - ES_CREATE_INDEX_TEMPLATES=false
       - ES_VERSION=8
       - QUERY_BASE_PATH=/
       - QUERY_LOG_LEVEL=info
