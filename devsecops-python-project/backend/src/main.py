@@ -1,10 +1,10 @@
-# Updated Backend main.py with Enhanced Health Check for Observability
+# FIXED Backend main.py - Resolves 503 Health Check Issues
+# Make health endpoint more resilient to observability service failures
 
 #!/usr/bin/env python3
 """
 DevSecOps 3-Tier Application - Backend API with ELK & Jaeger Integration
-Flask REST API with PostgreSQL database, ELK logging, and Jaeger tracing
-FIXED: Enhanced health checks and observability status endpoints
+FIXED: Resilient health checks that don't cause 503 errors
 """
 from flask import Flask, jsonify, request, g
 from flask_cors import CORS
@@ -59,13 +59,17 @@ def setup_tracing():
     provider = TracerProvider(resource=resource)
     trace.set_tracer_provider(provider)
 
-    otlp_exporter = OTLPSpanExporter(
-        endpoint=otlp_endpoint,
-        insecure=insecure,
-        headers={}
-    )
-    span_processor = BatchSpanProcessor(otlp_exporter)
-    provider.add_span_processor(span_processor)
+    try:
+        otlp_exporter = OTLPSpanExporter(
+            endpoint=otlp_endpoint,
+            insecure=insecure,
+            headers={}
+        )
+        span_processor = BatchSpanProcessor(otlp_exporter)
+        provider.add_span_processor(span_processor)
+        logger.info(f"OpenTelemetry tracing initialized successfully to {otlp_endpoint}")
+    except Exception as e:
+        logger.warning(f"Failed to initialize OpenTelemetry tracing: {str(e)}")
 
     return trace.get_tracer(__name__)
 
@@ -117,11 +121,14 @@ migrate = Migrate(app, db)
 
 # Initialize OpenTelemetry instrumentation
 FlaskInstrumentor().instrument_app(app)
-with app.app_context():
-    SQLAlchemyInstrumentor().instrument(engine=db.engine)
-RequestsInstrumentor().instrument()
+try:
+    with app.app_context():
+        SQLAlchemyInstrumentor().instrument(engine=db.engine)
+    RequestsInstrumentor().instrument()
+except Exception as e:
+    logger.warning(f"Failed to initialize some instrumentation: {str(e)}")
 
-# Database Models (same as before)
+# Database Models
 class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
@@ -174,12 +181,12 @@ class AuditLog(db.Model):
             'timestamp': self.timestamp.isoformat() if self.timestamp else None
         }
 
-# NEW: Enhanced observability status checking functions
+# FIXED: Resilient observability status checking functions
 def check_elasticsearch_health():
-    """Check Elasticsearch cluster health"""
+    """Check Elasticsearch cluster health with timeout and error handling"""
     try:
         start_time = time.time()
-        response = requests.get(f"{app.config['ELASTICSEARCH_URL']}/_cluster/health", timeout=10)
+        response = requests.get(f"{app.config['ELASTICSEARCH_URL']}/_cluster/health", timeout=5)
         response_time = time.time() - start_time
         
         if response.status_code == 200:
@@ -193,14 +200,14 @@ def check_elasticsearch_health():
         else:
             return {'healthy': False, 'status': 'error', 'response_time': response_time, 'details': f'HTTP {response.status_code}'}
     except Exception as e:
-        return {'healthy': False, 'status': 'error', 'response_time': None, 'details': str(e)}
+        return {'healthy': False, 'status': 'unavailable', 'response_time': None, 'details': str(e)[:100]}
 
 def check_jaeger_health():
-    """Check Jaeger collector health"""
+    """Check Jaeger collector health with timeout and error handling"""
     try:
         start_time = time.time()
         # Check Jaeger health endpoint
-        response = requests.get('http://jaeger:14269/', timeout=10)
+        response = requests.get('http://jaeger:14269/', timeout=5)
         response_time = time.time() - start_time
         
         return {
@@ -210,13 +217,13 @@ def check_jaeger_health():
             'details': f'HTTP {response.status_code}'
         }
     except Exception as e:
-        return {'healthy': False, 'status': 'error', 'response_time': None, 'details': str(e)}
+        return {'healthy': False, 'status': 'unavailable', 'response_time': None, 'details': str(e)[:100]}
 
 def check_logstash_health():
-    """Check Logstash health"""
+    """Check Logstash health with timeout and error handling"""
     try:
         start_time = time.time()
-        response = requests.get('http://logstash:9600/_node/stats', timeout=10)
+        response = requests.get('http://logstash:9600/_node/stats', timeout=5)
         response_time = time.time() - start_time
         
         if response.status_code == 200:
@@ -225,25 +232,25 @@ def check_logstash_health():
                 'healthy': True,
                 'status': 'healthy',
                 'response_time': response_time,
-                'details': f"Pipeline: {stats.get('pipeline', {}).get('events', {}).get('in', 0)} events"
+                'details': f"Pipeline events: {stats.get('pipeline', {}).get('events', {}).get('in', 0)}"
             }
         else:
             return {'healthy': False, 'status': 'error', 'response_time': response_time, 'details': f'HTTP {response.status_code}'}
     except Exception as e:
-        return {'healthy': False, 'status': 'error', 'response_time': None, 'details': str(e)}
+        return {'healthy': False, 'status': 'unavailable', 'response_time': None, 'details': str(e)[:100]}
 
 def check_kibana_health():
-    """Check Kibana health"""
+    """Check Kibana health with timeout and error handling"""
     try:
         start_time = time.time()
-        response = requests.get('http://kibana:5601/api/status', timeout=10)
+        response = requests.get('http://kibana:5601/api/status', timeout=5)
         response_time = time.time() - start_time
         
         if response.status_code == 200:
             status_data = response.json()
             overall_status = status_data.get('status', {}).get('overall', {}).get('state', 'unknown')
             return {
-                'healthy': overall_status == 'green',
+                'healthy': overall_status in ['green', 'yellow'],
                 'status': overall_status,
                 'response_time': response_time,
                 'details': f"Status: {overall_status}"
@@ -251,19 +258,24 @@ def check_kibana_health():
         else:
             return {'healthy': False, 'status': 'error', 'response_time': response_time, 'details': f'HTTP {response.status_code}'}
     except Exception as e:
-        return {'healthy': False, 'status': 'error', 'response_time': None, 'details': str(e)}
+        return {'healthy': False, 'status': 'unavailable', 'response_time': None, 'details': str(e)[:100]}
 
-# Middleware for request tracking and tracing (same as before)
+# Middleware for request tracking and tracing
 @app.before_request
 def before_request():
     request.start_time = time.time()
     trace_id = request.headers.get('X-Trace-ID') or str(uuid.uuid4())
     g.trace_id = trace_id
-    span = tracer.start_span(f"{request.method} {request.endpoint}")
-    span.set_attribute("http.method", request.method)
-    span.set_attribute("http.url", request.url)
-    span.set_attribute("trace.id", trace_id)
-    g.span = span
+    
+    try:
+        span = tracer.start_span(f"{request.method} {request.endpoint}")
+        span.set_attribute("http.method", request.method)
+        span.set_attribute("http.url", request.url)
+        span.set_attribute("trace.id", trace_id)
+        g.span = span
+    except Exception as e:
+        logger.warning(f"Failed to create span: {str(e)}")
+        g.span = None
 
     logger.info("Request started", extra={
         "trace_id": trace_id,
@@ -288,14 +300,17 @@ def after_request(response):
 
     response.headers['X-Trace-ID'] = trace_id
 
-    if hasattr(g, 'span'):
-        g.span.set_attribute("http.status_code", response.status_code)
-        g.span.set_attribute("http.response_size", len(response.get_data()))
-        if response.status_code >= 400:
-            from opentelemetry.trace import Status, StatusCode
-            g.span.set_status(Status(StatusCode.ERROR))
-        g.span.end()
-        JAEGER_SPANS.labels(operation=request.endpoint or 'unknown').inc()
+    if hasattr(g, 'span') and g.span:
+        try:
+            g.span.set_attribute("http.status_code", response.status_code)
+            g.span.set_attribute("http.response_size", len(response.get_data()))
+            if response.status_code >= 400:
+                from opentelemetry.trace import Status, StatusCode
+                g.span.set_status(Status(StatusCode.ERROR))
+            g.span.end()
+            JAEGER_SPANS.labels(operation=request.endpoint or 'unknown').inc()
+        except Exception as e:
+            logger.warning(f"Failed to end span: {str(e)}")
 
     log_level = 'error' if response.status_code >= 400 else 'info'
     logger.log(
@@ -314,16 +329,21 @@ def after_request(response):
 
     return response
 
-# ENHANCED: Health check endpoint with observability status
+# FIXED: Resilient health check endpoint that always returns 200 for core app health
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Enhanced health check endpoint with observability stack status"""
+    """FIXED: Resilient health check endpoint - always returns 200 for core app health"""
     try:
-        # Check database connectivity
-        with app.app_context():
-            db.session.execute(text('SELECT 1'))
+        # Check database connectivity (core requirement)
+        database_healthy = False
+        try:
+            with app.app_context():
+                db.session.execute(text('SELECT 1'))
+            database_healthy = True
+        except Exception as e:
+            logger.error(f"Database health check failed: {str(e)}")
 
-        # Check observability stack
+        # Check observability stack (informational only)
         observability_status = {
             'elasticsearch': check_elasticsearch_health(),
             'jaeger': check_jaeger_health(),
@@ -331,14 +351,12 @@ def health_check():
             'kibana': check_kibana_health()
         }
 
-        # Determine overall health
-        all_healthy = all(service['healthy'] for service in observability_status.values())
-        database_healthy = True  # We've already tested this above
-
-        overall_healthy = database_healthy and all_healthy
-
+        # FIXED: Always return 200 if core app (database) is healthy
+        # Observability services are supplementary and shouldn't cause 503
+        core_healthy = database_healthy
+        
         health_status = {
-            'status': 'healthy' if overall_healthy else 'degraded',
+            'status': 'healthy' if core_healthy else 'unhealthy',
             'timestamp': datetime.utcnow().isoformat(),
             'service': 'devsecops-backend',
             'version': '1.0.0',
@@ -351,9 +369,15 @@ def health_check():
             'trace_id': getattr(g, 'trace_id', None)
         }
 
-        status_code = 200 if overall_healthy else 503
-        logger.info(f"Health check completed - Status: {health_status['status']}", 
-                   extra={'trace_id': health_status['trace_id']})
+        # FIXED: Return 200 if core app is healthy, even if observability services have issues
+        status_code = 200 if core_healthy else 503
+        
+        log_level = 'info' if core_healthy else 'error'
+        logger.log(
+            getattr(logging, log_level.upper()),
+            f"Health check completed - Status: {health_status['status']}", 
+            extra={'trace_id': health_status['trace_id']}
+        )
         
         return jsonify(health_status), status_code
 
@@ -366,7 +390,7 @@ def health_check():
             'trace_id': getattr(g, 'trace_id', None)
         }), 503
 
-# Prometheus metrics endpoint (same as before)
+# Prometheus metrics endpoint
 @app.route('/metrics', methods=['GET'])
 def metrics():
     """Prometheus metrics endpoint"""
@@ -378,7 +402,7 @@ def metrics():
         logger.error(f"Metrics endpoint failed: {str(e)}", extra={'trace_id': getattr(g, 'trace_id', None)})
         return jsonify({'error': 'Metrics unavailable'}), 500
 
-# Sample CRUD endpoints (same as before)
+# Sample CRUD endpoints
 @app.route('/api/users', methods=['GET'])
 def get_users():
     try:
@@ -488,7 +512,7 @@ if __name__ == '__main__':
 
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('DEBUG', 'false').lower() == 'true'
-    logger.info("Starting DevSecOps Backend API with Enhanced Observability", extra={
+    logger.info("Starting DevSecOps Backend API with FIXED Resilient Health Checks", extra={
         "port": port,
         "debug": debug,
         "elasticsearch_url": app.config['ELASTICSEARCH_URL'],
