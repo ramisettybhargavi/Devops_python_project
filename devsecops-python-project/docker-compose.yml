@@ -1,3 +1,6 @@
+# Fixed Docker Compose Configuration
+# Addresses Jaeger, Prometheus, and Frontend issues
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -20,6 +23,22 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    restart: unless-stopped
+
+  # ADD MISSING POSTGRES EXPORTER FOR PROMETHEUS MONITORING
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: devsecops-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://devsecops_user:secure_password_123@postgres:5432/devsecops_db?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: "/etc/postgres_exporter/queries.yaml"
+    ports:
+      - "9187:9187"
+    networks:
+      - app-network
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   db-migration:
@@ -58,7 +77,7 @@ services:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       - LOGSTASH_HOST=logstash
       - LOGSTASH_PORT=5044
-      # Updated Jaeger configuration to use OTLP instead of deprecated agent
+      # Fixed Jaeger configuration to use OTLP
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - OTEL_EXPORTER_OTLP_INSECURE=true
       - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
@@ -66,9 +85,6 @@ services:
       - SERVICE_NAME=devsecops-backend
       - ENVIRONMENT=development
       - LOG_LEVEL=INFO
-      # Remove deprecated Jaeger agent configuration
-      # - JAEGER_AGENT_HOST=jaeger
-      # - JAEGER_AGENT_PORT=6831
     ports:
       - "5000:5000"
     depends_on:
@@ -96,7 +112,7 @@ services:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
       - ES_JAVA_OPTS=-Xms2g -Xmx2g
-      - xpack.profiling.enabled=false                                                                                                                                                    
+      - xpack.profiling.enabled=false 
       - xpack.monitoring.templates.enabled=true 
       - xpack.security.enabled=false
       - xpack.security.enrollment.enabled=false
@@ -105,6 +121,9 @@ services:
       - http.host=0.0.0.0
       - transport.host=0.0.0.0
       - network.host=0.0.0.0
+      # Ensure proper index creation and recovery
+      - cluster.initial_master_nodes=devsecops-es-node
+      - gateway.recover_after_nodes=1
     ulimits:
       memlock:
         soft: -1
@@ -136,8 +155,12 @@ services:
       - PIPELINE_BATCH_SIZE=125
       - PIPELINE_BATCH_DELAY=50
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      # Add monitoring configuration
+      - xpack.monitoring.enabled=true
+      - xpack.monitoring.elasticsearch.hosts=http://elasticsearch:9200
     volumes:
       - ./observability/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      - ./observability/logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
       - logstash_data:/usr/share/logstash/data
     ports:
       - "5044:5044"
@@ -185,15 +208,17 @@ services:
     restart: unless-stopped
 
   jaeger:
-    image: jaegertracing/all-in-one:1.53
+    image: jaegertracing/jaeger-all-in-one:1.53
     container_name: devsecops-jaeger
     environment:
-      # Enable OTLP collector - this is the modern way
+      # FIXED: Enable proper index template creation
       - COLLECTOR_OTLP_ENABLED=true
       - SPAN_STORAGE_TYPE=elasticsearch
       - ES_SERVER_URLS=http://elasticsearch:9200
-      - ES_CREATE_INDEX_TEMPLATES=false
+      - ES_CREATE_INDEX_TEMPLATES=true  # FIXED: Enable auto-creation
       - ES_VERSION=8
+      - ES_NUM_SHARDS=1
+      - ES_NUM_REPLICAS=0
       - QUERY_BASE_PATH=/
       - QUERY_LOG_LEVEL=info
       # Configure OTLP endpoints properly
@@ -201,10 +226,15 @@ services:
       - COLLECTOR_OTLP_HTTP_HOST_PORT=0.0.0.0:4318
       # Keep legacy ports for compatibility but OTLP is preferred
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+      # Add index management
+      - ES_INDEX_PREFIX=jaeger
+      - ES_INDEX_DATE_SEPARATOR=-
+      # Add health check configuration
+      - ADMIN_HTTP_HOST_PORT=0.0.0.0:14269
     ports:
       # OTLP ports (modern, recommended)
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
       # Legacy Jaeger ports (deprecated but kept for compatibility)
       - "6831:6831/udp"
       - "6832:6832/udp"
@@ -213,8 +243,8 @@ services:
       - "14250:14250"
       - "9411:9411"
       # UI and monitoring ports
-      - "16686:16686"  # Jaeger UI
-      - "14269:14269"  # Health check
+      - "16686:16686" # Jaeger UI
+      - "14269:14269" # Health check
     networks:
       - app-network
     depends_on:
@@ -278,18 +308,18 @@ services:
       - '--storage.tsdb.retention.time=30d'
       - '--web.listen-address=0.0.0.0:9090'
     volumes:
-      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/prometheus-fixed.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
     networks:
       - app-network
-    # Add host.docker.internal support for Linux environments
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       - node-exporter
       - cadvisor
+      - postgres-exporter  # Add dependency on postgres-exporter
     healthcheck:
       test: ["CMD", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy"]
       interval: 30s
@@ -347,8 +377,12 @@ services:
       dockerfile: Dockerfile
     container_name: devsecops-frontend
     environment:
+      # FIXED: Use environment variable for backend URL
       - BACKEND_URL=http://backend:5000
       - NGINX_PORT=80
+      # ADD: Public IP environment variable for deployment
+      - PUBLIC_IP=${PUBLIC_IP:-localhost}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
     ports:
       - "8080:80"
     networks:
