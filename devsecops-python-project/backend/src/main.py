@@ -236,7 +236,7 @@ def health_check():
     """Health check endpoint for monitoring and load balancers"""
     try:
         with app.app_context():
-            db.session.execute('SELECT 1')
+            db.session.execute(text('SELECT 1'))
 
         health_status = {
             'status': 'healthy',
