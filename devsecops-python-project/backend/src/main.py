@@ -73,13 +73,7 @@ def setup_tracing():
     )
 
     # Create span processor with optimized batch settings
-    span_processor = BatchSpanProcessor(
-        otlp_exporter,
-        max_queue_size=2048,
-        max_export_batch_size=512,
-        export_timeout=30,
-        schedule_delay=5
-    )
+    span_processor = BatchSpanProcessor(otlp_exporter)
     provider.add_span_processor(span_processor)
 
     return trace.get_tracer(__name__)
