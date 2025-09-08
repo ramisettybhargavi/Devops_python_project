@@ -131,7 +131,9 @@ migrate = Migrate(app, db)
 
 # Initialize OpenTelemetry instrumentation
 FlaskInstrumentor().instrument_app(app)
-SQLAlchemyInstrumentor().instrument(engine=db.engine)
+with app.app_context():
+    SQLAlchemyInstrumentor().instrument(engine=db.engine)
+#SQLAlchemyInstrumentor().instrument(engine=db.engine)
 RequestsInstrumentor().instrument()
 
 # Database Models
