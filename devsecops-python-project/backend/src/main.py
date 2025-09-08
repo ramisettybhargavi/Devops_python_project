@@ -9,17 +9,13 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from prometheus_client import Counter, Histogram, generate_latest
 import logging
-import json
 import os
 import time
 import uuid
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
-import requests
 from pythonjsonlogger import jsonlogger
 from opentelemetry import trace
-# Remove deprecated Jaeger Thrift exporter import
-# from opentelemetry.exporter.jaeger.thrift import JaegerExporter
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
@@ -27,21 +23,17 @@ from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.resources import Resource
-import socket
-import re
 
 # Configure structured logging for ELK
 def setup_logging():
     """Setup structured JSON logging for ELK stack"""
     log_level = os.environ.get('LOG_LEVEL', 'INFO')
-    # Create JSON formatter
     logHandler = logging.StreamHandler()
     formatter = jsonlogger.JsonFormatter(
         fmt='%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d',
         datefmt='%Y-%m-%dT%H:%M:%S'
     )
     logHandler.setFormatter(formatter)
-    # Configure logger
     logger = logging.getLogger()
     logger.addHandler(logHandler)
     logger.setLevel(getattr(logging, log_level.upper()))
@@ -50,12 +42,10 @@ def setup_logging():
 # Setup OpenTelemetry tracing using OTLP exporter (modern)
 def setup_tracing():
     """Setup OpenTelemetry distributed tracing with OTLP"""
-    # Use OTLP endpoint (modern approach)
     otlp_endpoint = os.environ.get('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://jaeger:4317')
     insecure = os.environ.get('OTEL_EXPORTER_OTLP_INSECURE', 'true').lower() == 'true'
     service_name = os.environ.get('SERVICE_NAME', 'devsecops-backend')
 
-    # Create tracer provider with resource information
     resource = Resource.create({
         "service.name": service_name,
         "service.version": "1.0.0",
@@ -64,19 +54,16 @@ def setup_tracing():
     provider = TracerProvider(resource=resource)
     trace.set_tracer_provider(provider)
 
-    # Create OTLP exporter with proper configuration
     otlp_exporter = OTLPSpanExporter(
         endpoint=otlp_endpoint,
         insecure=insecure,
-        # Add headers if needed for authentication
         headers={}
     )
-
-    # Create span processor with optimized batch settings
     span_processor = BatchSpanProcessor(otlp_exporter)
     provider.add_span_processor(span_processor)
 
     return trace.get_tracer(__name__)
+
 # Initialize logging and tracing
 logger = setup_logging()
 tracer = setup_tracing()
@@ -92,14 +79,14 @@ app = Flask(__name__)
 
 # Enable CORS for frontend integration
 CORS(app, origins=[
-    'http://localhost:3000', 
+    'http://localhost:3000',
     'http://localhost:8080',
     'http://localhost:8000'
 ])
 
 # Database configuration
 DATABASE_URL = os.environ.get(
-    'DATABASE_URL', 
+    'DATABASE_URL',
     'postgresql://devsecops_user:secure_password_123@localhost:5432/devsecops_db'
 )
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
@@ -127,7 +114,6 @@ migrate = Migrate(app, db)
 FlaskInstrumentor().instrument_app(app)
 with app.app_context():
     SQLAlchemyInstrumentor().instrument(engine=db.engine)
-#SQLAlchemyInstrumentor().instrument(engine=db.engine)
 RequestsInstrumentor().instrument()
 
 # Database Models
@@ -140,6 +126,7 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -149,10 +136,13 @@ class User(db.Model):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'is_active': self.is_active
         }
+
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
+
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
     def __repr__(self):
         return f'<User {self.email}>'
 
@@ -164,8 +154,9 @@ class AuditLog(db.Model):
     resource = db.Column(db.String(50), nullable=False)
     details = db.Column(db.Text)
     ip_address = db.Column(db.String(45))
-    trace_id = db.Column(db.String(100))  # Store trace ID for correlation
+    trace_id = db.Column(db.String(100))
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -182,16 +173,14 @@ class AuditLog(db.Model):
 @app.before_request
 def before_request():
     request.start_time = time.time()
-    # Get or generate trace ID
     trace_id = request.headers.get('X-Trace-ID') or str(uuid.uuid4())
     g.trace_id = trace_id
-    # Start a new span for this request
     span = tracer.start_span(f"{request.method} {request.endpoint}")
     span.set_attribute("http.method", request.method)
     span.set_attribute("http.url", request.url)
     span.set_attribute("trace.id", trace_id)
     g.span = span
-    # Structured logging
+
     logger.info("Request started", extra={
         "trace_id": trace_id,
         "method": request.method,
@@ -205,16 +194,16 @@ def before_request():
 def after_request(response):
     request_duration = time.time() - request.start_time
     trace_id = getattr(g, 'trace_id', 'unknown')
-    # Update Prometheus metrics
+
     REQUEST_COUNT.labels(
         method=request.method,
         endpoint=request.endpoint or 'unknown',
         status=response.status_code
     ).inc()
     REQUEST_DURATION.observe(request_duration)
-    # Add trace ID to response headers
+
     response.headers['X-Trace-ID'] = trace_id
-    # Finish span
+
     if hasattr(g, 'span'):
         g.span.set_attribute("http.status_code", response.status_code)
         g.span.set_attribute("http.response_size", len(response.get_data()))
@@ -223,7 +212,7 @@ def after_request(response):
             g.span.set_status(Status(StatusCode.ERROR))
         g.span.end()
         JAEGER_SPANS.labels(operation=request.endpoint or 'unknown').inc()
-    # Structured logging
+
     log_level = 'error' if response.status_code >= 400 else 'info'
     logger.log(
         getattr(logging, log_level.upper()),
@@ -238,19 +227,129 @@ def after_request(response):
         }
     )
     ELK_LOGS.labels(level=log_level).inc()
+
     return response
 
-# Utility functions and API routes remain unchanged...
+# Health check endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for monitoring and load balancers"""
+    try:
+        with app.app_context():
+            db.session.execute('SELECT 1')
+
+        health_status = {
+            'status': 'healthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'service': 'devsecops-backend',
+            'version': '1.0.0',
+            'checks': {
+                'database': 'connected',
+                'application': 'running'
+            },
+            'trace_id': getattr(g, 'trace_id', None)
+        }
+
+        logger.info("Health check successful", extra={'trace_id': health_status['trace_id']})
+        return jsonify(health_status), 200
+
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}", extra={'trace_id': getattr(g, 'trace_id', None)})
+        return jsonify({
+            'status': 'unhealthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'error': str(e)
+        }), 503
+
+# Prometheus metrics endpoint
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    """Prometheus metrics endpoint"""
+    try:
+        metrics_data = generate_latest()
+        logger.info("Metrics endpoint accessed", extra={'trace_id': getattr(g, 'trace_id', None)})
+        return metrics_data, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    except Exception as e:
+        logger.error(f"Metrics endpoint failed: {str(e)}", extra={'trace_id': getattr(g, 'trace_id', None)})
+        return jsonify({'error': 'Metrics unavailable'}), 500
+
+# Sample CRUD endpoints
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    try:
+        DB_OPERATIONS.labels(operation='SELECT', table='users').inc()
+        users = User.query.filter_by(is_active=True).all()
+
+        audit_log = AuditLog(
+            action='LIST_USERS',
+            resource='users',
+            details=f'Retrieved {len(users)} users',
+            ip_address=request.remote_addr,
+            trace_id=getattr(g, 'trace_id', None)
+        )
+        db.session.add(audit_log)
+        db.session.commit()
+
+        return jsonify({
+            'users': [u.to_dict() for u in users],
+            'count': len(users),
+            'trace_id': getattr(g, 'trace_id', None)
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Failed to get users: {str(e)}", extra={'trace_id': getattr(g, 'trace_id', None)})
+        return jsonify({'error': 'Failed to retrieve users'}), 500
+
+@app.route('/api/users', methods=['POST'])
+def create_user():
+    try:
+        data = request.get_json()
+        if not data or not data.get('name') or not data.get('email'):
+            return jsonify({'error': 'Name and email are required'}), 400
+
+        if User.query.filter_by(email=data['email']).first():
+            return jsonify({'error': 'User with this email already exists'}), 409
+
+        user = User(name=data['name'], email=data['email'])
+        if data.get('password'):
+            user.set_password(data['password'])
+
+        DB_OPERATIONS.labels(operation='INSERT', table='users').inc()
+        db.session.add(user)
+        db.session.commit()
+
+        audit_log = AuditLog(
+            user_id=user.id,
+            action='CREATE_USER',
+            resource='users',
+            details=f'Created user: {user.email}',
+            ip_address=request.remote_addr,
+            trace_id=getattr(g, 'trace_id', None)
+        )
+        db.session.add(audit_log)
+        db.session.commit()
+
+        logger.info(f"User created: {user.email}", extra={'trace_id': getattr(g, 'trace_id', None)})
+        return jsonify({
+            'message': 'User created successfully',
+            'user': user.to_dict(),
+            'trace_id': getattr(g, 'trace_id', None)
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Failed to create user: {str(e)}", extra={'trace_id': getattr(g, 'trace_id', None)})
+        return jsonify({'error': 'Failed to create user'}), 500
+
+# Utility to wait for DB readiness
 def wait_for_db(app, max_retries=30):
-    """Wait for the database to be ready before starting the app."""
-    import time
     import sqlalchemy
     for attempt in range(max_retries):
         try:
             with app.app_context():
                 db.session.execute('SELECT 1')
-                logger.info("Database connection successful")
-                return True
+            logger.info("Database connection successful")
+            return True
         except sqlalchemy.exc.OperationalError:
             logger.warning(f"Database not ready, retry attempt {attempt + 1}/{max_retries}")
             time.sleep(2)
@@ -260,8 +359,10 @@ if __name__ == '__main__':
     if not wait_for_db(app):
         logger.error("Could not connect to the database after maximum retries")
         exit(1)
+
     with app.app_context():
         db.create_all()
+
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('DEBUG', 'false').lower() == 'true'
     logger.info("Starting DevSecOps Backend API with ELK & Jaeger", extra={
