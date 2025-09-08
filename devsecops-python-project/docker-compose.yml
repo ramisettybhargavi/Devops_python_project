@@ -185,7 +185,7 @@ services:
     restart: unless-stopped
 
   jaeger:
-    image: jaegertracing/all-in-one:1.49
+    image: jaegertracing/all-in-one:1.53
     container_name: devsecops-jaeger
     environment:
       # Enable OTLP collector - this is the modern way
