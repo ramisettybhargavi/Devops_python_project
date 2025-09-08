@@ -1,3 +1,6 @@
+# FIXED Logstash Configuration - Removes problematic monitoring settings
+# This configuration file removes the problematic xpack.monitoring.enabled settings
+
 # Logstash Settings
 node.name: devsecops-logstash
 path.data: /usr/share/logstash/data
@@ -19,9 +22,15 @@ queue.max_bytes: 1gb
 dead_letter_queue.enable: true
 dead_letter_queue.max_bytes: 1gb
 
-# Monitoring
-monitoring.enabled: true
-monitoring.elasticsearch.hosts: ["http://elasticsearch:9200"]
+# FIXED: Remove problematic monitoring configuration
+# The following settings were causing errors:
+# - monitoring.enabled
+# - xpack.monitoring.enabled
+# These have been removed to prevent startup errors
+
+# HTTP API
+http.host: "0.0.0.0"
+http.port: 9600
 
 # Logging
 log.level: info
@@ -29,7 +38,3 @@ slowlog.threshold.warn: 2s
 slowlog.threshold.info: 1s
 slowlog.threshold.debug: 500ms
 slowlog.threshold.trace: 100ms
-
-# HTTP API
-http.host: "0.0.0.0"
-http.port: 9600
