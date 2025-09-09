@@ -17,41 +17,37 @@ class DevSecOpsApp {
 
     // Load configuration from environment variables
     loadEnvironmentConfig() {
-        const publicIP = process.env.PUBLIC_IP || window.location.hostname;
-        const backendPort = process.env.BACKEND_PORT || '5000';
-        const protocol = window.location.protocol;
-        const isProduction = process.env.NODE_ENV === 'production';
-
-        // Determine backend URL
-        let backendUrl;
-        if (publicIP && publicIP !== 'localhost' && publicIP !== '127.0.0.1') {
-            backendUrl = `${protocol}//${publicIP}:${backendPort}`;
-        } else {
-            backendUrl = `${protocol}//localhost:${backendPort}`;
-        }
-
-        // Standard observability ports (fixed as per your requirement)
-        const standardPorts = {
+        // FIXED: Load configuration from window.APP_CONFIG instead of process.env
+loadEnvironmentConfig() {
+    // Wait for config to be available
+    const config = window.APP_CONFIG || {};
+    
+    const publicIP = config.publicIP || window.location.hostname;
+    const backendPort = config.backendPort || '5000';
+    const protocol = window.location.protocol;
+    
+    console.log('Loading configuration from window.APP_CONFIG:', config);
+    
+    // Use injected configuration
+    return {
+        backendUrl: config.backendUrl || `${protocol}//${publicIP}:${backendPort}`,
+        publicIP: publicIP,
+        kibanaUrl: config.kibanaUrl || `${protocol}//${publicIP}:5601`,
+        jaegerUrl: config.jaegerUrl || `${protocol}//${publicIP}:16686`,
+        grafanaUrl: config.grafanaUrl || `${protocol}//${publicIP}:3000`,
+        elasticsearchUrl: config.elasticsearchUrl || `${protocol}//${publicIP}:9200`,
+        prometheusUrl: config.prometheusUrl || `${protocol}//${publicIP}:9090`,
+        isProduction: config.environment === 'production',
+        environment: config.environment || 'development',
+        standardPorts: {
             kibana: 5601,
             jaeger: 16686,
             grafana: 3000,
             elasticsearch: 9200,
             prometheus: 9090
-        };
-
-        return {
-            backendUrl: backendUrl,
-            publicIP: publicIP,
-            kibanaUrl: `${protocol}//${publicIP}:${standardPorts.kibana}`,
-            jaegerUrl: `${protocol}//${publicIP}:${standardPorts.jaeger}`,
-            grafanaUrl: `${protocol}//${publicIP}:${standardPorts.grafana}`,
-            elasticsearchUrl: `${protocol}//${publicIP}:${standardPorts.elasticsearch}`,
-            prometheusUrl: `${protocol}//${publicIP}:${standardPorts.prometheus}`,
-            isProduction: isProduction,
-            standardPorts: standardPorts
-        };
-    }
-
+        }
+    };
+}
     generateTraceId() {
         return 'trace-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
     }
