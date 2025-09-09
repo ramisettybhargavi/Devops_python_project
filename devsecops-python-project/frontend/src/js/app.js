@@ -8,6 +8,8 @@ class DevSecOpsApp {
         this.baseURL = this.config.backendUrl;
         this.traceId = this.generateTraceId();
         this.currentPage = 1;
+        this.retryCount = 0;
+        this.maxRetries = 3;
         this.init();
     }
 
@@ -16,13 +18,13 @@ class DevSecOpsApp {
         // Check if running in development or production
         const hostname = window.location.hostname;
         const protocol = window.location.protocol;
-        
+
         // Try to get configuration from environment variables or meta tags
         const backendUrl = document.querySelector('meta[name="backend-url"]')?.content || 
                           this.getBackendUrl(hostname, protocol);
-        
+
         const publicIP = document.querySelector('meta[name="public-ip"]')?.content || hostname;
-        
+
         return {
             backendUrl: backendUrl,
             publicIP: publicIP,
@@ -34,8 +36,9 @@ class DevSecOpsApp {
         };
     }
 
-    // NEW: Smart backend URL detection
+    // NEW: Smart backend URL detection with fallback
     getBackendUrl(hostname, protocol) {
+        // For EC2 deployment, try multiple strategies
         if (hostname === 'localhost' || hostname === '127.0.0.1') {
             return `${protocol}//localhost:5000`;
         } else {
@@ -50,16 +53,27 @@ class DevSecOpsApp {
 
     init() {
         this.updateTraceIdDisplay();
-        this.updateObservabilityLinks(); // NEW: Update observability links
+        this.updateObservabilityLinks();
         this.refreshHealthStatus();
         this.loadUsers();
         this.startMetricsPolling();
-        
-        // Set up periodic refresh
+
+        // Set up periodic refresh with exponential backoff on failures
+        this.setupPeriodicRefresh();
+    }
+
+    setupPeriodicRefresh() {
+        // Initial refresh after 5 seconds
+        setTimeout(() => {
+            this.refreshHealthStatus();
+            this.updateMetrics();
+        }, 5000);
+
+        // Then every 30 seconds
         setInterval(() => {
             this.refreshHealthStatus();
             this.updateMetrics();
-        }, 30000); // Every 30 seconds
+        }, 30000);
     }
 
     // NEW: Update observability links with correct URLs
@@ -113,47 +127,80 @@ class DevSecOpsApp {
 
     async makeRequest(url, options = {}) {
         const defaultOptions = {
+            method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
                 'X-Trace-ID': this.traceId,
+                'Accept': 'application/json',
                 ...options.headers
             }
         };
 
         const mergedOptions = { ...defaultOptions, ...options };
-        
+
         try {
+            console.log(`Making request to: ${url}`);
             const response = await fetch(url, mergedOptions);
-            
+
             // Update trace ID if provided in response
             const responseTraceId = response.headers.get('X-Trace-ID');
             if (responseTraceId) {
                 this.traceId = responseTraceId;
                 this.updateTraceIdDisplay();
             }
-            
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            this.retryCount = 0; // Reset retry count on success
             return response;
         } catch (error) {
             console.error('Request failed:', error);
-            this.showAlert('Network error occurred. Please check if the backend service is running.', 'danger');
-            throw error;
+
+            if (this.retryCount < this.maxRetries) {
+                this.retryCount++;
+                const retryDelay = Math.pow(2, this.retryCount) * 1000; // Exponential backoff
+                console.log(`Retrying in ${retryDelay}ms... (Attempt ${this.retryCount}/${this.maxRetries})`);
+
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+                return this.makeRequest(url, options);
+            } else {
+                this.showAlert('Network error: Unable to connect to backend service. Please check if the backend is running.', 'danger');
+                throw error;
+            }
         }
     }
 
     async refreshHealthStatus() {
         const refreshIcon = document.getElementById('refreshIcon');
+        const statusContainer = document.getElementById('healthStatusContainer');
+
         if (refreshIcon) {
             refreshIcon.classList.add('loading');
         }
 
         try {
+            console.log(`Checking health at: ${this.baseURL}/health`);
+
+            // Show loading state
+            if (statusContainer) {
+                statusContainer.innerHTML = `
+                    <div class="alert alert-info">
+                        <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                        Checking system health...
+                    </div>
+                `;
+            }
+
             const response = await this.makeRequest(`${this.baseURL}/health`);
             const healthData = await response.json();
-            
+
+            console.log('Health data received:', healthData);
             this.displayHealthStatus(healthData);
         } catch (error) {
             console.error('Health check failed:', error);
-            this.displayHealthError();
+            this.displayHealthError(error.message);
         } finally {
             if (refreshIcon) {
                 refreshIcon.classList.remove('loading');
@@ -167,7 +214,6 @@ class DevSecOpsApp {
 
         const isHealthy = healthData.status === 'healthy';
         const statusClass = isHealthy ? 'success' : 'danger';
-        const statusIcon = isHealthy ? 'check-circle' : 'exclamation-triangle';
 
         let observabilityHtml = '';
         if (healthData.observability) {
@@ -175,13 +221,12 @@ class DevSecOpsApp {
                 const serviceHealthy = status.healthy;
                 const serviceClass = serviceHealthy ? 'status-healthy' : 'status-unhealthy';
                 const serviceName = service.charAt(0).toUpperCase() + service.slice(1);
-                
+
                 observabilityHtml += `
-                    <div class="col-md-6 mb-2">
-                        <div class="d-flex align-items-center">
-                            <span class="badge ${serviceClass} me-2">${serviceHealthy ? '✓' : '✗'}</span>
-                            <span class="fw-medium">${serviceName}</span>
-                            ${status.response_time ? `<small class="text-muted ms-auto">${Math.round(status.response_time * 1000)}ms</small>` : ''}
+                    <div class="col-md-4 mb-2">
+                        <div class="badge ${serviceHealthy ? 'bg-success' : 'bg-danger'} w-100 p-2">
+                            ${serviceHealthy ? '✓' : '✗'} ${serviceName}
+                            ${status.response_time ? ` (${Math.round(status.response_time * 1000)}ms)` : ''}
                         </div>
                     </div>
                 `;
@@ -189,50 +234,57 @@ class DevSecOpsApp {
         }
 
         container.innerHTML = `
-            <div class="alert alert-${statusClass} mb-3">
-                <div class="d-flex align-items-center">
-                    <i class="fas fa-${statusIcon} me-2"></i>
-                    <div>
-                        <strong>System Status: ${healthData.status.toUpperCase()}</strong><br>
-                        <small>Last updated: ${new Date(healthData.timestamp).toLocaleString()}</small><br>
-                        <small>Uptime: ${Math.round(healthData.uptime || 0)} seconds</small>
+            <div class="alert alert-${statusClass}">
+                <h5><i class="bi bi-${isHealthy ? 'check-circle' : 'exclamation-triangle'}"></i> 
+                    System Status: ${healthData.status.toUpperCase()}</h5>
+                <p class="mb-1">Last updated: ${new Date(healthData.timestamp).toLocaleString()}</p>
+                <p class="mb-0">Uptime: ${Math.round(healthData.uptime || 0)} seconds</p>
+            </div>
+
+            ${observabilityHtml ? `
+                <div class="mt-3">
+                    <h6>Observability Stack:</h6>
+                    <div class="row">
+                        ${observabilityHtml}
                     </div>
                 </div>
-            </div>
-            
-            <div class="row">
-                <div class="col-12">
-                    <h6 class="fw-bold mb-3">Observability Stack:</h6>
-                </div>
-                <div class="row">
-                    ${observabilityHtml}
-                </div>
-            </div>
+            ` : ''}
         `;
     }
 
-    displayHealthError() {
+    displayHealthError(errorMessage) {
         const container = document.getElementById('healthStatusContainer');
         if (!container) return;
 
         container.innerHTML = `
             <div class="alert alert-danger">
-                <div class="d-flex align-items-center">
-                    <i class="fas fa-exclamation-triangle me-2"></i>
-                    <div>
-                        <strong>Unable to fetch system health status</strong><br>
-                        <small>Please check if the backend service is running at ${this.baseURL}</small>
-                    </div>
-                </div>
+                <h5><i class="bi bi-exclamation-triangle"></i> Unable to fetch system health status</h5>
+                <p class="mb-1">Backend URL: ${this.baseURL}</p>
+                <p class="mb-1">Error: ${errorMessage || 'Unknown error'}</p>
+                <small>Please check if the backend service is running and accessible.</small>
             </div>
         `;
     }
 
     async loadUsers(page = 1) {
+        const tableBody = document.getElementById('usersTableBody');
+
         try {
+            // Show loading state
+            if (tableBody) {
+                tableBody.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="text-center">
+                            <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                            Loading users...
+                        </td>
+                    </tr>
+                `;
+            }
+
             const response = await this.makeRequest(`${this.baseURL}/api/users?page=${page}&per_page=10`);
             const data = await response.json();
-            
+
             this.displayUsers(data.users || []);
             this.displayPagination(data.pagination || {});
             this.currentPage = page;
@@ -249,7 +301,9 @@ class DevSecOpsApp {
         if (users.length === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="6" class="text-center">No users found</td>
+                    <td colspan="6" class="text-center text-muted">
+                        No users found
+                    </td>
                 </tr>
             `;
             return;
@@ -262,19 +316,19 @@ class DevSecOpsApp {
                 <td>${this.escapeHtml(user.email)}</td>
                 <td>${new Date(user.created_at).toLocaleDateString()}</td>
                 <td>
-                    <span class="badge ${user.is_active ? 'bg-success' : 'bg-secondary'}">
+                    <span class="badge bg-${user.is_active ? 'success' : 'secondary'}">
                         ${user.is_active ? 'Active' : 'Inactive'}
                     </span>
                 </td>
                 <td>
-                    <button class="btn btn-sm btn-outline-primary me-1" onclick="app.viewUser(${user.id})" title="View">
-                        <i class="fas fa-eye"></i>
+                    <button class="btn btn-sm btn-outline-primary me-1" onclick="app.viewUser(${user.id})">
+                        View
                     </button>
-                    <button class="btn btn-sm btn-outline-warning me-1" onclick="app.editUser(${user.id})" title="Edit">
-                        <i class="fas fa-edit"></i>
+                    <button class="btn btn-sm btn-outline-warning me-1" onclick="app.editUser(${user.id})">
+                        Edit
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="app.deleteUser(${user.id})" title="Delete">
-                        <i class="fas fa-trash"></i>
+                    <button class="btn btn-sm btn-outline-danger" onclick="app.deleteUser(${user.id})">
+                        Delete
                     </button>
                 </td>
             </tr>
@@ -287,9 +341,11 @@ class DevSecOpsApp {
 
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="text-center text-danger">
-                    <i class="fas fa-exclamation-triangle me-2"></i>
-                    Failed to load users. Backend service may be unavailable.
+                <td colspan="6" class="text-center">
+                    <div class="alert alert-danger mb-0">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        Failed to load users. Backend service may be unavailable.
+                    </div>
                 </td>
             </tr>
         `;
@@ -305,7 +361,9 @@ class DevSecOpsApp {
         if (pagination.has_prev) {
             paginationHtml += `
                 <li class="page-item">
-                    <a class="page-link" href="#" onclick="app.loadUsers(${pagination.page - 1}); return false;">Previous</a>
+                    <a class="page-link" href="#" onclick="app.loadUsers(${pagination.page - 1}); return false;">
+                        Previous
+                    </a>
                 </li>
             `;
         }
@@ -315,7 +373,9 @@ class DevSecOpsApp {
             const isActive = i === pagination.page;
             paginationHtml += `
                 <li class="page-item ${isActive ? 'active' : ''}">
-                    <a class="page-link" href="#" onclick="app.loadUsers(${i}); return false;">${i}</a>
+                    <a class="page-link" href="#" onclick="app.loadUsers(${i}); return false;">
+                        ${i}
+                    </a>
                 </li>
             `;
         }
@@ -324,7 +384,9 @@ class DevSecOpsApp {
         if (pagination.has_next) {
             paginationHtml += `
                 <li class="page-item">
-                    <a class="page-link" href="#" onclick="app.loadUsers(${pagination.page + 1}); return false;">Next</a>
+                    <a class="page-link" href="#" onclick="app.loadUsers(${pagination.page + 1}); return false;">
+                        Next
+                    </a>
                 </li>
             `;
         }
@@ -353,22 +415,18 @@ class DevSecOpsApp {
                 body: JSON.stringify(userData)
             });
 
-            if (response.ok) {
-                const result = await response.json();
-                this.showAlert('User created successfully!', 'success');
-                this.clearCreateUserForm();
-                this.loadUsers(this.currentPage);
-                
-                // Close modal
-                const modal = bootstrap.Modal.getInstance(document.getElementById('createUserModal'));
-                if (modal) modal.hide();
-            } else {
-                const error = await response.json();
-                this.showAlert(error.error || 'Failed to create user', 'danger');
-            }
+            const result = await response.json();
+            this.showAlert('User created successfully!', 'success');
+            this.clearCreateUserForm();
+            this.loadUsers(this.currentPage);
+
+            // Close modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('createUserModal'));
+            if (modal) modal.hide();
+
         } catch (error) {
             console.error('Create user error:', error);
-            this.showAlert('Network error occurred', 'danger');
+            this.showAlert('Failed to create user. Please try again.', 'danger');
         }
     }
 
@@ -382,16 +440,11 @@ class DevSecOpsApp {
                 method: 'DELETE'
             });
 
-            if (response.ok) {
-                this.showAlert('User deleted successfully!', 'success');
-                this.loadUsers(this.currentPage);
-            } else {
-                const error = await response.json();
-                this.showAlert(error.error || 'Failed to delete user', 'danger');
-            }
+            this.showAlert('User deleted successfully!', 'success');
+            this.loadUsers(this.currentPage);
         } catch (error) {
             console.error('Delete user error:', error);
-            this.showAlert('Network error occurred', 'danger');
+            this.showAlert('Failed to delete user. Please try again.', 'danger');
         }
     }
 
@@ -399,16 +452,16 @@ class DevSecOpsApp {
         // Generate new trace for this operation
         this.traceId = this.generateTraceId();
         this.updateTraceIdDisplay();
-        
-        alert(`View user functionality - User ID: ${userId}\nTrace ID: ${this.traceId}`);
+
+        this.showAlert(`View user functionality - User ID: ${userId}`, 'info');
     }
 
     editUser(userId) {
         // Generate new trace for this operation
         this.traceId = this.generateTraceId();
         this.updateTraceIdDisplay();
-        
-        alert(`Edit user functionality - User ID: ${userId}\nTrace ID: ${this.traceId}`);
+
+        this.showAlert(`Edit user functionality - User ID: ${userId}`, 'info');
     }
 
     clearCreateUserForm() {
@@ -418,13 +471,17 @@ class DevSecOpsApp {
     }
 
     showAlert(message, type = 'info') {
+        // Remove existing alerts
+        const existingAlerts = document.querySelectorAll('.custom-alert');
+        existingAlerts.forEach(alert => alert.remove());
+
         // Create alert element
         const alertDiv = document.createElement('div');
-        alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
-        alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+        alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed custom-alert`;
+        alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px; max-width: 500px;';
         alertDiv.innerHTML = `
             ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         `;
 
         document.body.appendChild(alertDiv);
@@ -449,13 +506,15 @@ class DevSecOpsApp {
     }
 
     startMetricsPolling() {
-        // Simulate metrics updates
+        // Initial metrics update
         this.updateMetrics();
-        setInterval(() => this.updateMetrics(), 10000); // Every 10 seconds
+
+        // Update metrics every 10 seconds
+        setInterval(() => this.updateMetrics(), 10000);
     }
 
     updateMetrics() {
-        // Simulate metrics data
+        // Simulate realistic metrics data
         const responseTime = Math.floor(Math.random() * 200) + 50;
         const totalRequests = Math.floor(Math.random() * 10000) + 1000;
         const errorRate = (Math.random() * 5).toFixed(2);
@@ -485,8 +544,11 @@ function createUser() {
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('Initializing DevSecOps App...');
     window.app = new DevSecOpsApp();
-    
+
     // Display configuration info in console for debugging
     console.log('DevSecOps App Configuration:', window.app.config);
+
+    console.log('App initialized successfully');
 });
