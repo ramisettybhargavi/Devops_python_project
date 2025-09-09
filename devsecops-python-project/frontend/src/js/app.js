@@ -1,50 +1,55 @@
 // FIXED DevSecOps Frontend Application JavaScript
-// Addresses hardcoded localhost URLs and adds dynamic configuration
+// Uses PUBLIC_IP from environment variables to construct all URLs
 
 class DevSecOpsApp {
     constructor() {
-        // FIXED: Use environment-based configuration instead of hardcoded localhost
-        this.config = this.getConfiguration();
+        // Load configuration from environment variables
+        this.config = this.loadEnvironmentConfig();
         this.baseURL = this.config.backendUrl;
         this.traceId = this.generateTraceId();
         this.currentPage = 1;
         this.retryCount = 0;
         this.maxRetries = 3;
+        
+        console.log('App Configuration:', this.config);
         this.init();
     }
 
-    // NEW: Dynamic configuration based on environment
-    getConfiguration() {
-        // Check if running in development or production
-        const hostname = window.location.hostname;
+    // Load configuration from environment variables
+    loadEnvironmentConfig() {
+        const publicIP = process.env.PUBLIC_IP || window.location.hostname;
+        const backendPort = process.env.BACKEND_PORT || '5000';
         const protocol = window.location.protocol;
+        const isProduction = process.env.NODE_ENV === 'production';
 
-        // Try to get configuration from environment variables or meta tags
-        const backendUrl = document.querySelector('meta[name="backend-url"]')?.content || 
-                          this.getBackendUrl(hostname, protocol);
+        // Determine backend URL
+        let backendUrl;
+        if (publicIP && publicIP !== 'localhost' && publicIP !== '127.0.0.1') {
+            backendUrl = `${protocol}//${publicIP}:${backendPort}`;
+        } else {
+            backendUrl = `${protocol}//localhost:${backendPort}`;
+        }
 
-        const publicIP = document.querySelector('meta[name="public-ip"]')?.content || hostname;
+        // Standard observability ports (fixed as per your requirement)
+        const standardPorts = {
+            kibana: 5601,
+            jaeger: 16686,
+            grafana: 3000,
+            elasticsearch: 9200,
+            prometheus: 9090
+        };
 
         return {
             backendUrl: backendUrl,
             publicIP: publicIP,
-            kibanaUrl: `${protocol}//${publicIP}:5601`,
-            jaegerUrl: `${protocol}//${publicIP}:16686`,
-            grafanaUrl: `${protocol}//${publicIP}:3000`,
-            elasticsearchUrl: `${protocol}//${publicIP}:9200`,
-            prometheusUrl: `${protocol}//${publicIP}:9090`
+            kibanaUrl: `${protocol}//${publicIP}:${standardPorts.kibana}`,
+            jaegerUrl: `${protocol}//${publicIP}:${standardPorts.jaeger}`,
+            grafanaUrl: `${protocol}//${publicIP}:${standardPorts.grafana}`,
+            elasticsearchUrl: `${protocol}//${publicIP}:${standardPorts.elasticsearch}`,
+            prometheusUrl: `${protocol}//${publicIP}:${standardPorts.prometheus}`,
+            isProduction: isProduction,
+            standardPorts: standardPorts
         };
-    }
-
-    // NEW: Smart backend URL detection with fallback
-    getBackendUrl(hostname, protocol) {
-        // For EC2 deployment, try multiple strategies
-        if (hostname === 'localhost' || hostname === '127.0.0.1') {
-            return `${protocol}//localhost:5000`;
-        } else {
-            // For EC2 deployment, use the same host with port 5000
-            return `${protocol}//${hostname}:5000`;
-        }
     }
 
     generateTraceId() {
@@ -57,26 +62,34 @@ class DevSecOpsApp {
         this.refreshHealthStatus();
         this.loadUsers();
         this.startMetricsPolling();
-
-        // Set up periodic refresh with exponential backoff on failures
         this.setupPeriodicRefresh();
+        
+        // Display environment info for debugging
+        this.displayEnvironmentInfo();
+    }
+
+    displayEnvironmentInfo() {
+        console.log('Environment Configuration:');
+        console.log('- Public IP:', this.config.publicIP);
+        console.log('- Backend URL:', this.config.backendUrl);
+        console.log('- Kibana URL:', this.config.kibanaUrl);
+        console.log('- Jaeger URL:', this.config.jaegerUrl);
+        console.log('- Grafana URL:', this.config.grafanaUrl);
+        console.log('- Production Mode:', this.config.isProduction);
     }
 
     setupPeriodicRefresh() {
-        // Initial refresh after 5 seconds
         setTimeout(() => {
             this.refreshHealthStatus();
             this.updateMetrics();
         }, 5000);
 
-        // Then every 30 seconds
         setInterval(() => {
             this.refreshHealthStatus();
             this.updateMetrics();
         }, 30000);
     }
 
-    // NEW: Update observability links with correct URLs
     updateObservabilityLinks() {
         const links = {
             'kibana-link': this.config.kibanaUrl,
@@ -91,26 +104,29 @@ class DevSecOpsApp {
             if (element) {
                 element.href = url;
                 element.target = '_blank';
+                element.setAttribute('data-url', url);
             }
         });
 
-        // Update any display elements showing URLs
         this.updateUrlDisplays();
     }
 
-    // NEW: Update URL displays in the UI
     updateUrlDisplays() {
         const displays = {
             'kibana-url-display': this.config.kibanaUrl,
             'jaeger-url-display': this.config.jaegerUrl,
             'grafana-url-display': this.config.grafanaUrl,
-            'elasticsearch-url-display': this.config.elasticsearchUrl
+            'elasticsearch-url-display': this.config.elasticsearchUrl,
+            'prometheus-url-display': this.config.prometheusUrl,
+            'backend-url-display': this.config.backendUrl,
+            'public-ip-display': this.config.publicIP
         };
 
         Object.entries(displays).forEach(([id, url]) => {
             const element = document.getElementById(id);
             if (element) {
                 element.textContent = url;
+                element.setAttribute('title', url);
             }
         });
     }
@@ -142,31 +158,25 @@ class DevSecOpsApp {
             console.log(`Making request to: ${url}`);
             const response = await fetch(url, mergedOptions);
 
-            // Update trace ID if provided in response
-            const responseTraceId = response.headers.get('X-Trace-ID');
-            if (responseTraceId) {
-                this.traceId = responseTraceId;
-                this.updateTraceIdDisplay();
-            }
-
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                const errorText = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errorText}`);
             }
 
-            this.retryCount = 0; // Reset retry count on success
+            this.retryCount = 0;
             return response;
         } catch (error) {
             console.error('Request failed:', error);
 
             if (this.retryCount < this.maxRetries) {
                 this.retryCount++;
-                const retryDelay = Math.pow(2, this.retryCount) * 1000; // Exponential backoff
+                const retryDelay = Math.pow(2, this.retryCount) * 1000;
                 console.log(`Retrying in ${retryDelay}ms... (Attempt ${this.retryCount}/${this.maxRetries})`);
 
                 await new Promise(resolve => setTimeout(resolve, retryDelay));
                 return this.makeRequest(url, options);
             } else {
-                this.showAlert('Network error: Unable to connect to backend service. Please check if the backend is running.', 'danger');
+                this.showAlert(`Network error: Unable to connect to ${url}. Check if services are running on ${this.config.publicIP}`, 'danger');
                 throw error;
             }
         }
@@ -176,35 +186,26 @@ class DevSecOpsApp {
         const refreshIcon = document.getElementById('refreshIcon');
         const statusContainer = document.getElementById('healthStatusContainer');
 
-        if (refreshIcon) {
-            refreshIcon.classList.add('loading');
-        }
+        if (refreshIcon) refreshIcon.classList.add('loading');
 
         try {
-            console.log(`Checking health at: ${this.baseURL}/health`);
-
-            // Show loading state
             if (statusContainer) {
                 statusContainer.innerHTML = `
                     <div class="alert alert-info">
                         <div class="spinner-border spinner-border-sm me-2" role="status"></div>
-                        Checking system health...
+                        Checking system health at: ${this.baseURL}/health
                     </div>
                 `;
             }
 
             const response = await this.makeRequest(`${this.baseURL}/health`);
             const healthData = await response.json();
-
-            console.log('Health data received:', healthData);
             this.displayHealthStatus(healthData);
         } catch (error) {
             console.error('Health check failed:', error);
             this.displayHealthError(error.message);
         } finally {
-            if (refreshIcon) {
-                refreshIcon.classList.remove('loading');
-            }
+            if (refreshIcon) refreshIcon.classList.remove('loading');
         }
     }
 
@@ -219,13 +220,10 @@ class DevSecOpsApp {
         if (healthData.observability) {
             Object.entries(healthData.observability).forEach(([service, status]) => {
                 const serviceHealthy = status.healthy;
-                const serviceClass = serviceHealthy ? 'status-healthy' : 'status-unhealthy';
-                const serviceName = service.charAt(0).toUpperCase() + service.slice(1);
-
                 observabilityHtml += `
                     <div class="col-md-4 mb-2">
                         <div class="badge ${serviceHealthy ? 'bg-success' : 'bg-danger'} w-100 p-2">
-                            ${serviceHealthy ? '✓' : '✗'} ${serviceName}
+                            ${serviceHealthy ? '✓' : '✗'} ${service.charAt(0).toUpperCase() + service.slice(1)}
                             ${status.response_time ? ` (${Math.round(status.response_time * 1000)}ms)` : ''}
                         </div>
                     </div>
@@ -237,13 +235,15 @@ class DevSecOpsApp {
             <div class="alert alert-${statusClass}">
                 <h5><i class="bi bi-${isHealthy ? 'check-circle' : 'exclamation-triangle'}"></i> 
                     System Status: ${healthData.status.toUpperCase()}</h5>
+                <p class="mb-1">Server: ${this.config.publicIP}</p>
+                <p class="mb-1">Backend: ${this.baseURL}</p>
                 <p class="mb-1">Last updated: ${new Date(healthData.timestamp).toLocaleString()}</p>
                 <p class="mb-0">Uptime: ${Math.round(healthData.uptime || 0)} seconds</p>
             </div>
 
             ${observabilityHtml ? `
                 <div class="mt-3">
-                    <h6>Observability Stack:</h6>
+                    <h6>Observability Services:</h6>
                     <div class="row">
                         ${observabilityHtml}
                     </div>
@@ -259,9 +259,10 @@ class DevSecOpsApp {
         container.innerHTML = `
             <div class="alert alert-danger">
                 <h5><i class="bi bi-exclamation-triangle"></i> Unable to fetch system health status</h5>
+                <p class="mb-1">Server IP: ${this.config.publicIP}</p>
                 <p class="mb-1">Backend URL: ${this.baseURL}</p>
-                <p class="mb-1">Error: ${errorMessage || 'Unknown error'}</p>
-                <small>Please check if the backend service is running and accessible.</small>
+                <p class="mb-1">Error: ${errorMessage || 'Connection failed'}</p>
+                <small>Please check if backend service is running on port ${process.env.BACKEND_PORT || '5000'}</small>
             </div>
         `;
     }
@@ -270,13 +271,12 @@ class DevSecOpsApp {
         const tableBody = document.getElementById('usersTableBody');
 
         try {
-            // Show loading state
             if (tableBody) {
                 tableBody.innerHTML = `
                     <tr>
                         <td colspan="6" class="text-center">
                             <div class="spinner-border spinner-border-sm me-2" role="status"></div>
-                            Loading users...
+                            Loading users from: ${this.config.publicIP}
                         </td>
                     </tr>
                 `;
@@ -284,7 +284,6 @@ class DevSecOpsApp {
 
             const response = await this.makeRequest(`${this.baseURL}/api/users?page=${page}&per_page=10`);
             const data = await response.json();
-
             this.displayUsers(data.users || []);
             this.displayPagination(data.pagination || {});
             this.currentPage = page;
@@ -302,7 +301,7 @@ class DevSecOpsApp {
             tbody.innerHTML = `
                 <tr>
                     <td colspan="6" class="text-center text-muted">
-                        No users found
+                        No users found on server: ${this.config.publicIP}
                     </td>
                 </tr>
             `;
@@ -344,7 +343,8 @@ class DevSecOpsApp {
                 <td colspan="6" class="text-center">
                     <div class="alert alert-danger mb-0">
                         <i class="bi bi-exclamation-triangle"></i>
-                        Failed to load users. Backend service may be unavailable.
+                        Failed to load users from server: ${this.config.publicIP}<br>
+                        <small>Backend service may be unavailable on port ${process.env.BACKEND_PORT || '5000'}</small>
                     </div>
                 </td>
             </tr>
@@ -357,7 +357,6 @@ class DevSecOpsApp {
 
         let paginationHtml = '';
 
-        // Previous button
         if (pagination.has_prev) {
             paginationHtml += `
                 <li class="page-item">
@@ -368,7 +367,6 @@ class DevSecOpsApp {
             `;
         }
 
-        // Page numbers
         for (let i = 1; i <= pagination.pages; i++) {
             const isActive = i === pagination.page;
             paginationHtml += `
@@ -380,7 +378,6 @@ class DevSecOpsApp {
             `;
         }
 
-        // Next button
         if (pagination.has_next) {
             paginationHtml += `
                 <li class="page-item">
@@ -406,9 +403,7 @@ class DevSecOpsApp {
 
         try {
             const userData = { name, email };
-            if (password) {
-                userData.password = password;
-            }
+            if (password) userData.password = password;
 
             const response = await this.makeRequest(`${this.baseURL}/api/users`, {
                 method: 'POST',
@@ -420,7 +415,6 @@ class DevSecOpsApp {
             this.clearCreateUserForm();
             this.loadUsers(this.currentPage);
 
-            // Close modal
             const modal = bootstrap.Modal.getInstance(document.getElementById('createUserModal'));
             if (modal) modal.hide();
 
@@ -431,12 +425,10 @@ class DevSecOpsApp {
     }
 
     async deleteUser(userId) {
-        if (!confirm('Are you sure you want to delete this user?')) {
-            return;
-        }
+        if (!confirm('Are you sure you want to delete this user?')) return;
 
         try {
-            const response = await this.makeRequest(`${this.baseURL}/api/users/${userId}`, {
+            await this.makeRequest(`${this.baseURL}/api/users/${userId}`, {
                 method: 'DELETE'
             });
 
@@ -449,18 +441,14 @@ class DevSecOpsApp {
     }
 
     viewUser(userId) {
-        // Generate new trace for this operation
         this.traceId = this.generateTraceId();
         this.updateTraceIdDisplay();
-
         this.showAlert(`View user functionality - User ID: ${userId}`, 'info');
     }
 
     editUser(userId) {
-        // Generate new trace for this operation
         this.traceId = this.generateTraceId();
         this.updateTraceIdDisplay();
-
         this.showAlert(`Edit user functionality - User ID: ${userId}`, 'info');
     }
 
@@ -471,11 +459,9 @@ class DevSecOpsApp {
     }
 
     showAlert(message, type = 'info') {
-        // Remove existing alerts
         const existingAlerts = document.querySelectorAll('.custom-alert');
         existingAlerts.forEach(alert => alert.remove());
 
-        // Create alert element
         const alertDiv = document.createElement('div');
         alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed custom-alert`;
         alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px; max-width: 500px;';
@@ -486,11 +472,8 @@ class DevSecOpsApp {
 
         document.body.appendChild(alertDiv);
 
-        // Auto-remove after 5 seconds
         setTimeout(() => {
-            if (alertDiv.parentNode) {
-                alertDiv.parentNode.removeChild(alertDiv);
-            }
+            if (alertDiv.parentNode) alertDiv.parentNode.removeChild(alertDiv);
         }, 5000);
     }
 
@@ -506,15 +489,11 @@ class DevSecOpsApp {
     }
 
     startMetricsPolling() {
-        // Initial metrics update
         this.updateMetrics();
-
-        // Update metrics every 10 seconds
         setInterval(() => this.updateMetrics(), 10000);
     }
 
     updateMetrics() {
-        // Simulate realistic metrics data
         const responseTime = Math.floor(Math.random() * 200) + 50;
         const totalRequests = Math.floor(Math.random() * 10000) + 1000;
         const errorRate = (Math.random() * 5).toFixed(2);
@@ -531,24 +510,15 @@ class DevSecOpsApp {
 
 // Global functions for onclick handlers
 function refreshHealthStatus() {
-    if (window.app) {
-        window.app.refreshHealthStatus();
-    }
+    if (window.app) window.app.refreshHealthStatus();
 }
 
 function createUser() {
-    if (window.app) {
-        window.app.createUser();
-    }
+    if (window.app) window.app.createUser();
 }
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('Initializing DevSecOps App...');
+    console.log('Initializing DevSecOps App with PUBLIC_IP configuration...');
     window.app = new DevSecOpsApp();
-
-    // Display configuration info in console for debugging
-    console.log('DevSecOps App Configuration:', window.app.config);
-
-    console.log('App initialized successfully');
 });
