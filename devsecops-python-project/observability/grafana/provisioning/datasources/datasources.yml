@@ -11,6 +11,7 @@ datasources:
       httpMethod: POST
       manageAlerts: true
       queryTimeout: "60s"
+    uid: prometheus-ds
     editable: true
 
   - name: Jaeger
