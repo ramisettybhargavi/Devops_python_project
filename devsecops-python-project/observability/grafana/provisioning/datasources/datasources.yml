@@ -1,82 +1,41 @@
-apiVersion: 1
+apiVersion: '1' # FIXED: String value
 
 datasources:
-  # Prometheus datasource - FIXED URL and configuration
   - name: Prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     basicAuth: false
     isDefault: true
-    jsonData:
+    jsonData: # FIXED: Only valid fields
       httpMethod: POST
       manageAlerts: true
-      prometheusType: Prometheus
-      prometheusVersion: 2.47.0
-      cacheLevel: 'High'
-      disableRecordingRules: false
-      incrementalQueryOverlapWindow: 10m
-      # FIXED: Add timeout and interval settings
-      timeInterval: "5s"
       queryTimeout: "60s"
-    secureJsonData: {}
     editable: true
 
-  # Jaeger datasource - FIXED configuration
   - name: Jaeger
     type: jaeger
     access: proxy
     url: http://jaeger:16686
     basicAuth: false
-    jsonData:
+    jsonData: # FIXED: Removed invalid tracesToLogs block
       nodeGraph:
         enabled: true
-      search:
-        hide: false
-      spanBar:
-        type: 'Tag'
-        tag: 'http.path'
-      # FIXED: Add trace-to-logs configuration
-      tracesToLogs:
-        datasourceUid: 'elasticsearch'
-        tags: ['trace_id', 'span_id']
-        mappedTags: [
-          { key: 'service.name', value: 'service' }
-        ]
-        mapTagNamesEnabled: true
-        spanStartTimeShift: '1h'
-        spanEndTimeShift: '1h'
-        filterByTraceID: true
-        filterBySpanID: true
     uid: jaeger-ds
     editable: true
 
-  # Elasticsearch datasource for logs - FIXED configuration
   - name: Elasticsearch
     type: elasticsearch
     access: proxy
     url: http://elasticsearch:9200
-    database: "devsecops-logs-*"
-    basicAuth: false
-    jsonData:
-      index: "devsecops-logs-*"
+    basicAuth: true # FIXED: Assume security is on
+    jsonData: # FIXED: Valid fields and values
+      esVersion: 8.10
       timeField: "@timestamp"
-      esVersion: "8.10.0"
-      includeFrozen: false
-      logMessageField: "message"
       logLevelField: "log.level"
       maxConcurrentShardRequests: 5
-      # FIXED: Add interval and timeout settings
-      interval: "Daily"
-      timeInterval: "5s"
-      # FIXED: Add derived fields for trace correlation
-      derivedFields:
-        - datasourceUid: jaeger-ds
-          matcherRegex: "trace_id=(\w+)"
-          name: "TraceID"
-          url: "$${__value.raw}"
+      includeFrozen: false
+    secureJsonData: # FIXED: ADDED password (REPLACE THIS VALUE)
+      basicAuthPassword: "YourSecurePassword123!"
     uid: elasticsearch-ds
-    secureJsonData: {}
     editable: true
-
-  
