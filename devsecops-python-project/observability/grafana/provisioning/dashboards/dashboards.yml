@@ -1,7 +1,20 @@
 apiVersion: 1
 
 providers:
-  - name: 'default'
+  # Configuration for loading dashboards from files
+  - name: 'DevSecOps Dashboards'
+    orgId: 1
+    folder: 'DevSecOps'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true
+
+  # Configuration for default dashboards
+  - name: 'Default Dashboards'
     orgId: 1
     folder: ''
     type: file
@@ -9,4 +22,4 @@ providers:
     updateIntervalSeconds: 10
     allowUiUpdates: true
     options:
-      path: /var/lib/grafana/dashboards
+      path: /etc/grafana/provisioning/dashboards
